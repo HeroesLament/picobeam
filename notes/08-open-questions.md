@@ -159,3 +159,16 @@ sensitive work argues for `:deep` / `:balanced` (T = 4, 80 ns/instruction at
 50 MHz) and hard against `:wide` (T = 8, 160 ns/instruction). If the target
 application is control rather than throughput, T should not scale up with
 engines.
+---
+
+## Q2, revisited — T is application-dependent
+
+See `09-use-case-motion.md`. FOC argues for T = 4, because T divides
+single-process speed and the current loop *is* one sequential process. A
+fieldbus motion interpolator argues for T = 8, because per-axis latency is
+irrelevant against a 1 ms cycle and 80 contexts buys 80 supervised axes.
+
+Both are right for their application, which settles the original question in an
+unexpected direction: **T should be a solver input driven by a declared latency
+budget**, not a constant and not a free knob. Something like
+`Fit.solve(luts, ebrs, max_process_latency_ns: 20_000)`.
