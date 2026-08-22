@@ -1,0 +1,30 @@
+# Elixir / mix
+/_build/
+/deps/
+/doc/
+/.fetch
+erl_crash.dump
+*.ez
+*.beam
+/config/*.secret.exs
+.elixir_ls/
+
+# EHDL / synthesis output
+*.v
+!priv/**/*.v
+*.json
+*.bit
+*.svf
+*.config
+*.fasm
+*.frames
+*.vcd
+*.gtkw
+/build/
+/out/
+
+# Scratch
+.scratch/
+_prim/
+tmp_*.exs
+*.log
