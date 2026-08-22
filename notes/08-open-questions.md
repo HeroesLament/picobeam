@@ -112,3 +112,50 @@ per `03-architecture.md`); or migrate the process to a less-loaded engine
 
 **Leaning:** exit signal. It is the Erlang-shaped answer, it composes with
 supervision, and it keeps the allocation bound intact for everyone else.
+
+---
+
+## Q8 — How does a process touch a hardware register?
+
+**Surfaced by the first real use case (FOC motor control), and it is a hole, not
+a fork: picoBEAM currently has no I/O story at all.** ECOMP listed "external io"
+in its runtime and did it over PCI to a host. picoBEAM needs a native one,
+because the entire point is that the fabric next door *is* the peripheral.
+
+Candidates:
+
+- **`PORT_READ idx` / `PORT_WRITE idx`** with a compile-time port index resolved
+  at elaboration. Cheapest, 1 cycle, no allocation, fully deterministic. Least
+  Erlang-shaped.
+- **A reserved `PORT` tag** whose reads and writes route to a fabric register
+  file instead of BRAM. Uniform with the term model; costs a decode case.
+- **Ports as processes.** A fabric block owns a PID; you `send` to it and
+  `receive` from it. Most Erlang-shaped, reuses the whole NoC and mailbox path,
+  and gets supervision for free — a peripheral that faults sends an exit signal
+  and the supervisor restarts the driver. Costs message latency (~13 cy) per I/O.
+
+**Leaning:** the third, with the first as an escape hatch for latency-critical
+paths. *"A peripheral is a process you can link to"* is the design that makes
+picoBEAM different from a soft core with memory-mapped I/O, and it turns
+`monitor(EncoderPid)` into a real thing with a hardware-bounded detection time.
+
+Blocks any use case that touches the outside world. **Not deferrable past M4.**
+
+---
+
+## Q9 — Does an idle barrel context waste its slot?
+
+Fixed rotation gives every context exactly 1/T of the machine whether or not it
+has work. That *is* the determinism guarantee — and it also means an engine
+running one process runs at 50/T MIPS rather than 50. Skipping idle contexts
+recovers the throughput and destroys the guarantee: the share becomes 1/active,
+which varies with whatever else happens to be running.
+
+**Leaning:** fixed rotation, and say so loudly, because a control process that is
+*promised* its slot is the entire product.
+
+**Consequence for Q2:** T is the divisor on single-process speed. Latency-
+sensitive work argues for `:deep` / `:balanced` (T = 4, 80 ns/instruction at
+50 MHz) and hard against `:wide` (T = 8, 160 ns/instruction). If the target
+application is control rather than throughput, T should not scale up with
+engines.
