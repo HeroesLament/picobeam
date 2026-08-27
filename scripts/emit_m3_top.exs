@@ -1,0 +1,6 @@
+File.mkdir_p!("_emit/m3top")
+design = Hw.Compile.Elaborate.elaborate(PicoBEAM.RTL.Ulx3sM3Top)
+v = Hw.emit(design)
+File.write!("_emit/m3top/ulx3s_m3_top.v", v)
+IO.puts("bytes=#{byte_size(v)}")
+IO.puts("__M3_TOP_EMIT_DONE__")

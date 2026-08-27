@@ -71,6 +71,23 @@ defmodule PicoBEAM.Fabric do
 end
 ```
 
+**Correction (2026-08-22, Probe B):** the sketch above does not parse.
+EHDL's `generate` replicates only combinational statements (its body goes
+through `Parse.parse_statements`), so `generate` over `instance` is
+aspirational. The working mechanism is a plain compile-time `for`
+comprehension — a component body is ordinary Elixir and module attributes
+accumulate inside the loop:
+
+```elixir
+  for i <- 0..(@fit.engines - 1) do
+    wire :"link_#{i}", 36
+    instance :"pe_#{i}", PicoBEAM.Engine, ...
+  end
+```
+
+Proven in `../ehdl/_prim/probe_b.exs`. Bet 4 needs no DSL work; the
+original sketch is kept above so the correction has something to correct.
+
 ## Three operating points from one source
 
 LFE5U-85F: 84K LUT4, 208 EBR. Shared overhead: 20 EBR (code ROM 15, atom table

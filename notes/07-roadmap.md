@@ -6,17 +6,22 @@ rather than late.
 
 ---
 
-## M0 — Make the simulator able to simulate a CPU
+## M0 — Make the simulator able to simulate a CPU — **DONE**
 
-**Prerequisite for everything.** `../ehdl/AGENTS.md` fix #1: stop `_top_`
-evaluating its full comb set per edge; use `copy_needed_ops/4` as every other
-entity does. Then #2, targeted `build_env`. Only then consider dirty-tracking
-(`State.mark_top_dirty/1` and `clear_top_dirty/1` exist and suggest someone
-started down that road).
+**The number: 4 → 344–362 ticks/s (~87×) on `HelloBoard.Top`.**
 
-Measure with the per-process reduction-delta method — no profiler is available.
+Fix #1 (restrict `_top_`'s per-edge eval to the closure feeding its own regs)
+and #2 (targeted `build_env`) both landed, plus a third that the first two
+forced: `_top_`'s commit-phase eval is replaced by a design-visibility settle
+closure evaluated in the clock after all commits, which also turned two
+formerly scheduler-order-dependent races into deterministic orderings.
+Dirty-tracking was never needed. Equivalence vs the legacy path (kept behind
+`HW_SIM_TOP_FULL=1`): 94/94 reg-next values identical, 480 lockstep ticks
+with zero divergent signals. Full record in `../ehdl/AGENTS.md`; probes and
+verification scripts in `../ehdl/_prim/m0_*.exs`.
 
-**Demo:** ticks/s on `HelloBoard.Top`, before and after, stated as a number.
+Remaining headroom when M3+ needs it: the Rust NIF backend
+(`Hw.Sim.Backend.Nif`), which `Hw.Sim.start` does not yet use.
 
 ---
 
@@ -25,15 +30,15 @@ Measure with the per-process reduction-delta method — no profiler is available
 The instruction set as an Elixir interpreter, plus a Core Erlang front end for
 the v1 subset. Get the ISA wrong here, where it is cheap.
 
-Run **Probe A** and **Probe B** in parallel with this; they are independent of
-M0 and of each other.
+Probes A and B ran alongside M0 — both **done**, both green:
 
-- **Probe A:** does `memory` inference give true dual-port `DP16KD` on ECP5,
-  with independent read and write ports on one clock? Smallest possible test
-  design; read the nextpnr report. Gates Bet 1 and the GC argument.
-- **Probe B:** elaborate a trivial component replicated nine times under
-  `generate`; measure atom growth. Establishes whether the fabric can be
-  elaborated at all before designing it. Gates Bet 4.
+- **Probe A — CONFIRMED:** 512 × 36 `memory` with `sync_read:` → exactly one
+  `DP16KD`, single-clock and two-clock shapes. Caveats (memory names vs
+  Verilog keywords; one write site per memory — the 2×RW gap gates M5; no
+  MemWrite in sim) recorded in `06-risks.md`.
+- **Probe B — RETIRED:** +306 atoms for a 9× fabric, +0 on re-elaboration.
+  `generate` can't replicate instances, but a compile-time `for` over
+  `wire`/`instance` can and is proven — Bet 4's mechanism exists today.
 
 **Demo:** ring benchmark and a gen_server-shaped loop running on the model.
 

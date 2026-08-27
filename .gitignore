@@ -8,11 +8,21 @@ erl_crash.dump
 *.beam
 /config/*.secret.exs
 .elixir_ls/
+/cover/
 
-# EHDL / synthesis output
+# EHDL / synthesis output.
+#
+# `*.v` is the emitted netlist, which is a build product — but the GATE is
+# thirty-four hand-written Verilog testbenches under `scripts/`, and they
+# were being ignored along with it. A clone of this repo had no gate at
+# all: `run_tbs.sh` would emit everything, find no `tb_*.v`, and report
+# nothing. Found while cutting v0.1.0-rc.1 (`notes/48`).
 *.v
 !priv/**/*.v
+!scripts/*.v
+
 *.json
+!mix.lock
 *.bit
 *.svf
 *.config
@@ -23,8 +33,13 @@ erl_crash.dump
 /build/
 /out/
 
+# generated images, netlists and reports: everything under here comes
+# back from `scripts/emit_all.exs` and the mk_* generators
+/_emit/
+
 # Scratch
 .scratch/
 _prim/
+_to_delete/
 tmp_*.exs
 *.log

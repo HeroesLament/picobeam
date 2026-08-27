@@ -1,0 +1,1521 @@
+defmodule PicoBEAM.RTL.BarrelSeq do
+  @moduledoc """
+  M3 pass 3 — the barrel sequencer: M2's phase FSM redistributed across
+  T = 4 rotating contexts (`notes/16`).
+
+  ## The rotation and the pipeline
+
+      cycle:   t      t+1    t+2    t+3    t+4
+      F stage: ctx0   ctx1   ctx2   ctx3   ctx0
+      D stage:  —     ctx0   ctx1   ctx2   ctx3
+      X stage:  —      —     ctx0   ctx1   ctx2
+
+  `seat` is a free-running 2-bit counter (Q9: fixed rotation, always;
+  1/T is a promise about SLOTS, not progress). A context's bundle
+  spans F..X in 3 cycles and its next F is 4 cycles after its last —
+  at most ONE bundle of any context is ever in flight, so a control
+  decision at X (branch, call, halt, fault) needs no flush: the next
+  fetch simply uses the updated pc. No bypass, no interlock, no
+  wrong-path anything, by rotation arithmetic.
+
+  M2's FSM states survive as PER-CONTEXT status (`cstate0..3`):
+
+      0 idle · 1 run · 2 call_park · 3 ret_park · 4 fill ·
+      5 wb2 · 6 halted · 7 faulted · 9 spawn_park ·
+      10 recv_park · 11 scanning · 12 blocked ·
+      13 take_park · 14 rtake_long · 15 send_long · 16 sending ·
+      17 gc_park · 18 sup_park · 19 peek_wb · 20 catch_wb
+
+  The status field is FIVE bits. It was FOUR until the catch landing
+  arrived as state 20 (`notes/32`) — and four had already been one bit
+  short since `notes/22`, because the send park is state 16, which in
+  four bits is ZERO, which is *idle*. Nothing consulted the field for a
+  decision a sending context could lose, so it never bit; it was one
+  read away from doing so. It was three until spawn_park arrived
+  as state 9 and truncated to 1 (run): the context re-fetched its spawn
+  bundle forever, having silently become runnable again. Same species as
+  the M2 `pidx` collapse and the emitter width bugs in `notes/15` — a
+  new encoding value outgrew its field. Check the width whenever a state
+  is added.
+
+  A context whose status is not `run` bubbles its F slot (`f_en` low);
+  the rotation never skips.
+
+  ## Claims without an arbiter
+
+  Shared machinery (the drain unit via `drain_ready`, the fill stream
+  below) is claimed by a parked context ONLY at its own F slot. One
+  context owns any cycle's F slot, so at most one claimant exists per
+  cycle — a fixed schedule, not an arbiter, and a park is bounded by
+  T × (holder's remaining turns).
+
+  * **call**: at X the target latches (`tgtK`) and the context parks
+    (`call_park`); at its F slot with `drain_ready` it commits —
+    `call_commit`/`commit_seat`/`link_pc` (call-bundle pc + 1) pulse
+    for the engine (pointer rotation, link push, drain start), pc
+    becomes the target, and the NEXT turn fetches the callee (the
+    commit turn's fetch is skipped: one turn of latency, bounded and
+    cheap). `drain_pending[k]` sets at commit and clears on
+    `drain_done` — a ret cannot pop a frame whose drain is in flight.
+  * **ret**: at X the context parks (`ret_park`); at its F slot with
+    the fill stream free AND its own drain retired it strobes `pop_en`
+    (pop-then-fill, as M2) and takes the stream.
+
+  ## The fill stream rides the owner's own slots
+
+  Port 0 of the register window belongs to the X-stage context every
+  cycle, so a background fill (M2's 18-cycle burst) would collide with
+  other contexts' write-backs. Instead the fill advances ONE WORD PER
+  OWNER TURN: `fill_en`/`fill_idx` present at the owner's D slot (the
+  engine's existing one-cycle write delay lands the word exactly on
+  the owner's X slot — the M2 engine datapath is reused unchanged),
+  indices 0..15 over 16 turns, one gap turn for the last delayed
+  write, then `dest_wr` at the owner's X slot with the pc redirect to
+  `ret_pc_in`. A ret therefore costs ~18 turns (~72 cycles at T = 4).
+  Documented as the v1 price; the alternative (a fourth window bank —
+  the LVT's 2 bits have a spare code) is the measured-later upgrade.
+
+  ## wb2 is now just a turn
+
+  A bundle carrying a heap op / `ldc` sets `wb2`: the next turn
+  fetches nothing and its X slot strobes `wb2_en` — the engine lands
+  the late result through port 0 (which this context owns that
+  cycle), having captured the sync-read data into a per-context
+  register at X+1 (engine-side, integration pass). The latched
+  control decision (`pend_*`) dispatches at the wb2 X slot, exactly
+  M2's shape: a heap op costs 2 turns, and the slot M2 wasted is
+  other contexts' X time now — the promise 15 recorded, kept.
+
+  ## Seat control
+
+  `seat_wr`/`seat_idx`/`seat_pc` activates a context (state run) —
+  driven by the testbench now, by the seat unit (pass 6) later. Death
+  (halt or fault at X, or a pended halt at wb2) is an EVENT:
+  `died`/`died_seat`/`died_fault` pulse once and the context goes
+  terminal until re-seated; the engine turns that event into a
+  ProcTable free and a seat vacate in the integration pass.
+
+  Commit pulses stay combinational — the link-capture lesson from
+  first silicon (`notes/15`) is baked in, not relearned.
+  """
+
+  use Hw.Component
+
+  clock :clk, freq: 50.0
+
+  input :rst, 1
+
+  # seat control (testbench now; seat unit at pass 6)
+  input :seat_wr, 1
+  input :seat_idx, 2
+  input :seat_pc, 9
+  # vacate a seat: the context goes idle and stops fetching, its
+  # in-flight D/X bundles retire normally (the seat unit waits one
+  # owner turn before trusting f_pc as the saved resume address)
+  input :seat_clr, 1
+
+  # X-stage classification of the in-flight bundle (engine/TB)
+  input :is_jump, 1
+  input :pc_target, 9
+  input :is_call, 1
+  input :is_cfun, 1
+  input :is_ret, 1
+  input :is_halt, 1
+  # `try`/`catch` (notes/32). `try_begin` and `try_end` themselves are
+  # ordinary one-bundle ops to the sequencer — the engine keeps the
+  # catch state — but a FAULT inside a protected expression is not a
+  # death: `catch_go` says a handler is waiting, `catch_deep` says the
+  # fault happened below the frame the `try` was in and the frames have
+  # to be unwound first, and `catch_pc` is where the context resumes.
+  input :catch_go, 1
+  input :catch_deep, 1
+  input :catch_pc, 9
+  # the VM has halted (`notes/33`). Every context stops FETCHING; none of
+  # them is reset, because the population, the windows and the counters
+  # are the only record of what the machine was doing when it stopped.
+  input :frozen, 1
+  # 1 when the fill that just finished was a catch unwind rather than a
+  # ret, so the context lands on the handler instead of the link
+  input :dest_mode, 1
+  input :is_spawn, 1
+  # M4 receive: peek parks and scans, wait blocks. The other receive
+  # ops (start/hash/skip/take) are one turn and need nothing here.
+  input :is_rpeek, 1
+  # a `recv_wait` that must actually block (the engine has already
+  # checked the mailbox for unseen messages)
+  input :is_rwait_blk, 1
+  input :fault_in, 1
+  input :has_wb2, 1
+
+  # shared drain unit handshake (engine's drain FSM / TB)
+  input :drain_ready, 1
+  input :drain_done, 1
+  input :drain_done_seat, 2
+
+  # popped link's resume address (FrameRam)
+  input :ret_pc_in, 9
+
+  # spawn handshake (SeatUnit): ready = a free slot AND the drain is
+  # idle AND the seat unit's FSM is free; full = the proc table is out
+  # of slots, which is :system_limit on the SPAWNER
+  input :spawn_ready, 1
+  input :spawn_full, 1
+
+  # the mailbox's match unit: free to claim, and its completion pulse
+  input :scan_free, 1
+  input :scan_done, 1
+  input :scan_done_seat, 2
+  input :scan_hit, 1
+  # the hit is a COMPOUND message: it parks for a rebuild instead of
+  # resuming, so the clause that follows can look inside it
+  input :scan_long, 1
+
+  # a `send` whose message is a pointer: it parks while `SerUnit` walks
+  # the term and streams it into the target's mailbox as flits. An
+  # immediate message needs none of that and retires at X as it always
+  # did, which is why this is a separate strobe and not just `is_send`.
+  input :is_send_long, 1
+  input :ser_free, 1
+  input :ser_done, 1
+  input :ser_done_seat, 2
+  # A `recv_take` of a COMPOUND message has to rebuild it on the heap
+  # before it has anything to write, so it parks exactly the way a peek
+  # does: state 14 waits for the deserialiser, state 13 holds while it
+  # runs, and the resume is unconditional — a take that got this far
+  # already matched, so there is no miss arm.
+  input :is_rtake_long, 1
+
+  # a sup op (`link`/`unlink`/`monitor`/`exit2`) whose target pid is
+  # on ANOTHER engine: it becomes a ring packet, and the context parks
+  # (state 18) until the engine's egress latch takes it — the same
+  # backpressure discipline a remote send rides (notes/53 Phase 4).
+  input :is_sup_rem, 1
+  # "this seat is parked on a remote sup op, right now, at its own F
+  # slot" — the engine claims it there, exactly like `spawn_park`
+  output :sup_park, 1
+  input :sup_done, 1
+  input :sup_done_seat, 2
+  input :deser_free, 1
+  input :deser_done, 1
+  input :deser_done_seat, 2
+  # a SHORT peek hit: the engine holds the seat (state 19) until the
+  # peeked word's deferred writeback lands at the owner's X slot
+  # (entry 38 — the compound path always had this via deser_done)
+  input :pkw_done, 1
+  input :pkw_done_seat, 2
+  # a message arrived for a BLOCKED resident
+  input :unblock_en, 1
+  input :unblock_seat, 2
+  # a receive TIMEOUT resumes somewhere else: `recv_waitt` names a pc
+  # to land on when nothing arrived, so the unblock cannot always be
+  # "one past the wait"
+  input :unblock_jump, 1
+  input :unblock_pc, 9
+  # kill a resident from OUTSIDE the pipeline: a process whose mailbox
+  # overflowed dies wherever it is, and it may be sitting on a seat
+  # with no bundle in X to fault
+  # `notes/40` — the collector's two signals. `gc_park` says the bundle at
+  # X asked the heap for room it does not have; `gc_resume` says the
+  # collection is over and every parked bundle should run again.
+  input :gc_park, 1
+  # `notes/46` — one bit per context, not one bit. A collection used to
+  # be able to park exactly one bundle, so "resume anything in state 17"
+  # named it unambiguously. A per-process collection parks a context
+  # that tries to allocate before its turn has come, and more than one
+  # can be waiting at once, each for a different process's collection.
+  input :gc_res4, 4
+
+  # `notes/42` — `callfun`. Its target is not in the bundle: the engine
+  # reads it out of the closure and writes it into the seat's target
+  # latch a cycle after X, well before the F slot that commits the call.
+  # `bad_en` is the arity error that comes back with it, and it is the
+  # first death in this machine raised for a seat that is NOT at X —
+  # which is why it carries its own seat rather than riding `fault_in`.
+  input :ftgt_en, 1
+  input :ftgt_seat, 2
+  input :ftgt_pc, 9
+  input :bad_en, 1
+  input :bad_seat, 2
+  input :kill_en, 1
+  input :kill_seat, 2
+
+  # pipeline
+  output :f_seat, 2
+  output :f_en, 1
+  output :f_pc, 9
+  output :d_seat, 2
+  output :d_en, 1
+  output :x_seat, 2
+  output :x_en, 1
+  output :x_pc, 9
+
+  # call/ret/fill strobes
+  output :call_commit, 1
+  output :commit_seat, 2
+  output :link_pc, 9
+  output :pop_en, 1
+  # the shallow landing: a fault caught in the frame the `try` itself
+  # was in, so there is nothing to unwind. The engine writes the
+  # handler's reason register at this turn.
+  output :cwb_en, 1
+  output :cwb_seat, 2
+  output :fill_en, 1
+  output :fill_idx, 4
+  output :fill_seat, 2
+  output :dest_wr, 1
+  output :wb2_en, 1
+  output :spawn_commit, 1
+  output :spawn_seat, 2
+  # "this seat is parked on a spawn, right now, at its own F slot" —
+  # the same cycle `spawn_commit` would fire on if the answer were
+  # ready. A REMOTE spawn's answer is a ring round trip away, so the
+  # engine needs the question separately from the answer (`notes/49`).
+  output :spawn_park, 1
+  output :peek_go, 1
+  output :send_go, 1
+  output :send_seat, 2
+  output :peek_seat, 2
+  output :take_go, 1
+  output :take_seat, 2
+  # a context that WANTS to rebuild, before the engine's space check
+  # gates it. The engine needs the difference: `take_go` low because the
+  # deserialiser is busy means wait, and low because the heap has no room
+  # for the message means collect.
+  output :take_want, 1
+  # the F seat's context is BLOCKED on a receive — the seat unit's
+  # signal to evict it in favour of runnable work
+  output :f_blocked, 1
+  # the parked target of whichever context owns this F slot (the
+  # newborn's entry pc at spawn commit)
+  output :f_tgt, 9
+
+  # death events + per-context status
+  output :died, 1
+  output :died_seat, 2
+  output :died_fault, 1
+  output :dbg_st0, 5
+  output :dbg_st1, 5
+  output :dbg_st2, 5
+  output :dbg_st3, 5
+
+  # rotation + pipeline enables
+  wire :seat, 2, init: 0
+  wire :d_seat_r, 2, init: 0
+  wire :d_en_r, 1, init: 0
+  wire :x_seat_r, 2, init: 0
+  wire :x_en_r, 1, init: 0
+
+  # per-context state
+  wire :cstate0, 5, init: 0
+  wire :cstate1, 5, init: 0
+  wire :cstate2, 5, init: 0
+  wire :cstate3, 5, init: 0
+  wire :pc0, 9, init: 0
+  wire :pc1, 9, init: 0
+  wire :pc2, 9, init: 0
+  wire :pc3, 9, init: 0
+  wire :tgt0, 9, init: 0
+  wire :tgt1, 9, init: 0
+  wire :tgt2, 9, init: 0
+  wire :tgt3, 9, init: 0
+  wire :pc_c0, 1, init: 0
+  wire :pc_r0, 1, init: 0
+  wire :pc_h0, 1, init: 0
+  wire :pc_c1, 1, init: 0
+  wire :pc_r1, 1, init: 0
+  wire :pc_h1, 1, init: 0
+  wire :pc_c2, 1, init: 0
+  wire :pc_r2, 1, init: 0
+  wire :pc_h2, 1, init: 0
+  wire :pc_c3, 1, init: 0
+  wire :pc_r3, 1, init: 0
+  wire :pc_h3, 1, init: 0
+  wire :dp0, 1, init: 0
+  wire :dp1, 1, init: 0
+  wire :dp2, 1, init: 0
+  wire :dp3, 1, init: 0
+
+  # spawn-fail death pulse (the fault resolves at an F slot, not X)
+  wire :sfl, 1, init: 0
+  wire :sfl_seat, 2, init: 0
+
+  # the shared fill stream
+  wire :fill_busy, 1, init: 0
+  wire :fill_owner, 2, init: 0
+  wire :fill_i, 5, init: 0
+
+  # comb helpers
+  wire :cur_state, 5
+  wire :cur_pc, 9
+  wire :cur_dp, 1
+  wire :cstate_x, 5
+  wire :pend_h_x, 1
+  wire :commit, 1
+  wire :claim_ret, 1
+  wire :x_fault, 1
+  wire :fill_adv, 1
+  wire :spawn_go, 1
+  wire :spawn_die, 1
+  wire :peek_claim, 1
+  wire :take_claim, 1
+  wire :send_claim, 1
+  wire :park_long, 1
+
+  comb do
+    f_seat = seat
+    d_seat = d_seat_r
+    d_en = d_en_r
+    x_seat = x_seat_r
+    x_en = x_en_r
+
+    cur_state =
+      (seat == 0) * cstate0 + (seat == 1) * cstate1 + (seat == 2) * cstate2 +
+        (seat == 3) * cstate3
+
+    cur_pc = (seat == 0) * pc0 + (seat == 1) * pc1 + (seat == 2) * pc2 + (seat == 3) * pc3
+    cur_dp = (seat == 0) * dp0 + (seat == 1) * dp1 + (seat == 2) * dp2 + (seat == 3) * dp3
+
+    cstate_x =
+      (x_seat_r == 0) * cstate0 + (x_seat_r == 1) * cstate1 + (x_seat_r == 2) * cstate2 +
+        (x_seat_r == 3) * cstate3
+
+    pend_h_x =
+      (x_seat_r == 0) * pc_h0 + (x_seat_r == 1) * pc_h1 + (x_seat_r == 2) * pc_h2 +
+        (x_seat_r == 3) * pc_h3
+
+    x_pc =
+      (x_seat_r == 0) * pc0 + (x_seat_r == 1) * pc1 + (x_seat_r == 2) * pc2 +
+        (x_seat_r == 3) * pc3
+
+    f_en = band(cur_state == 1, bnot(frozen))
+    f_pc = cur_pc
+    f_tgt = (seat == 0) * tgt0 + (seat == 1) * tgt1 + (seat == 2) * tgt2 + (seat == 3) * tgt3
+
+    # F-slot claims: at most one claimant per cycle by rotation
+    commit = band(cur_state == 2, drain_ready)
+    claim_ret = band(cur_state == 3, band(bnot(fill_busy), bnot(cur_dp)))
+
+    call_commit = commit
+    commit_seat = seat
+    link_pc = cur_pc + 1
+    pop_en = claim_ret
+
+    # state 20 is a context that has caught a fault in its own frame:
+    # no frames to unwind, one register still to write. It takes its own
+    # X turn, which is free because no bundle is in flight for it.
+    cwb_en = band(cstate_x == 20, bnot(x_en_r))
+    cwb_seat = x_seat_r
+
+    # spawn parks like a call and commits at its own F slot; a full
+    # proc table kills the spawner instead (notes/13's :system_limit)
+    spawn_go = band(cur_state == 9, spawn_ready)
+    spawn_die = band(cur_state == 9, spawn_full)
+    spawn_commit = spawn_go
+    spawn_seat = seat
+    spawn_park = cur_state == 9
+    sup_park = cur_state == 18
+
+    # the scan is claimed at the scanning context's own F slot, like
+    # every other shared unit in this machine
+    peek_claim = band(cur_state == 10, scan_free)
+    peek_go = peek_claim
+    peek_seat = seat
+
+    take_claim = band(cur_state == 14, deser_free)
+    take_go = take_claim
+    take_seat = seat
+    take_want = cur_state == 14
+
+    # the serialiser is claimed at the sending context's own F slot, the
+    # way every shared unit in this machine is
+    # a compound take and a compound send both park, in different
+    # states; rule 3 says a bundle holds at most one system op, so they
+    # are mutually exclusive and this is a one-hot mux, not a priority
+    park_long = bor(is_rtake_long, bor(is_send_long, is_sup_rem))
+
+    send_claim = band(cur_state == 15, ser_free)
+    send_go = send_claim
+    send_seat = seat
+    f_blocked = cur_state == 12
+
+    # fill stream pacing: advance at the owner's D slot, present 0..15,
+    # one gap index (16) for the last delayed write, dest at 17
+    fill_adv = band(fill_busy, band(d_seat_r == fill_owner, fill_i < 17))
+    fill_en = band(fill_adv, fill_i < 16)
+    fill_idx = fill_i[3..0]
+    fill_seat = fill_owner
+    dest_wr = band(fill_busy, band(x_seat_r == fill_owner, fill_i == 17))
+
+    # the wb2 turn's X slot (no bundle in flight: x_en is low there)
+    wb2_en = band(cstate_x == 5, bnot(x_en_r))
+
+    # death events resolve at X: a live bundle halting/faulting, or a
+    # pended halt dispatching at the wb2 turn
+    # a fault that a `try` will catch is not a death: the context goes
+    # to the unwind instead, and nothing downstream should hear about it
+    x_fault = band(fault_in, bnot(catch_go))
+
+    died =
+      bor(sfl,
+        bor(band(x_en_r, bor(x_fault, is_halt)),
+          band(band(cstate_x == 5, bnot(x_en_r)), pend_h_x)))
+
+    died_seat = sfl * sfl_seat + bnot(sfl) * x_seat_r
+    died_fault = bor(sfl, band(x_en_r, x_fault))
+
+    dbg_st0 = cstate0
+    dbg_st1 = cstate1
+    dbg_st2 = cstate2
+    dbg_st3 = cstate3
+  end
+
+  on :clk do
+    if rst == 1 do
+      seat = 0
+      d_seat_r = 0
+      d_en_r = 0
+      x_seat_r = 0
+      x_en_r = 0
+      cstate0 = 0
+      cstate1 = 0
+      cstate2 = 0
+      cstate3 = 0
+      pc0 = 0
+      pc1 = 0
+      pc2 = 0
+      pc3 = 0
+      dp0 = 0
+      dp1 = 0
+      dp2 = 0
+      dp3 = 0
+      fill_busy = 0
+      fill_owner = 0
+      fill_i = 0
+      sfl = 0
+    else
+      sfl = 0
+
+      # rotation + pipeline registers
+      seat = seat + 1
+      d_seat_r = seat
+      d_en_r = f_en
+      x_seat_r = d_seat_r
+      x_en_r = d_en_r
+
+      # shared fill stream (single write site; claim wins over advance)
+      if claim_ret == 1 do
+        fill_busy = 1
+        fill_owner = seat
+        fill_i = 0
+      else
+        if fill_adv == 1 do
+          fill_i = fill_i + 1
+        end
+
+        if dest_wr == 1 do
+          fill_busy = 0
+        end
+      end
+
+      # ---- ctx 0 ----
+      if band(x_en_r, x_seat_r == 0) == 1 do
+        # `notes/40` — a heap that has run out is a REQUEST, not a
+        # fault. The bundle parks here with its pc untouched, so the
+        # collection is followed by the SAME bundle running again
+        # against a compacted heap. Nothing of the allocation has to
+        # be latched and carried across the pause, because nothing
+        # of it happened: the store refuses the bump on `heap_full`.
+        if gc_park == 1 do
+          cstate0 = 17
+        else
+        if fault_in == 1 do
+          # a live catch turns the fault into a landing instead of a
+          # death: state 3 (the ret path, with an absolute pop) when the
+          # frames have to be unwound first, state 20 when they do not
+          if catch_go == 1 do
+            pc0 = catch_pc
+
+            if catch_deep == 1 do
+              cstate0 = 3
+            else
+              cstate0 = 20
+            end
+          else
+            cstate0 = 7
+          end
+        else
+          if has_wb2 == 1 do
+            pc_c0 = is_call
+            pc_r0 = is_ret
+            pc_h0 = is_halt
+
+            if is_call == 1 do
+              tgt0 = pc_target
+            end
+
+            if band(bnot(is_call), band(bnot(is_ret), bnot(is_halt))) == 1 do
+              if is_jump == 1 do
+                pc0 = pc_target
+              else
+                pc0 = pc0 + 1
+              end
+            end
+
+            cstate0 = 5
+          else
+            if is_halt == 1 do
+              cstate0 = 6
+            else
+              if is_ret == 1 do
+                cstate0 = 3
+              else
+                if is_rpeek == 1 do
+                  # the none-label rides the same target latch a call uses
+                  tgt0 = pc_target
+                  cstate0 = 10
+                else
+                if park_long == 1 do
+                  cstate0 = is_rtake_long * 14 + is_send_long * 15 + is_sup_rem * 18
+                else
+                if is_rwait_blk == 1 do
+                  cstate0 = 12
+                else
+                if is_spawn == 1 do
+                  # the callee entry rides the SAME per-context target
+                  # latch a call uses; the commit is at a later F slot
+                  tgt0 = pc_target
+                  cstate0 = 9
+                else
+                if is_cfun == 1 do
+                  # a call whose target arrives a cycle later, through
+                  # `ftgt_*`. The park is the ordinary call park; only
+                  # the source of `tgt` differs (`notes/42`).
+                  cstate0 = 2
+                else
+                if is_call == 1 do
+                  cstate0 = 2
+                  tgt0 = pc_target
+                else
+                  if is_jump == 1 do
+                    pc0 = pc_target
+                  else
+                    pc0 = pc0 + 1
+                  end
+                end
+                end
+                end
+                end
+                end
+              end
+              end
+            end
+          end
+        end
+        end
+      end
+
+      # wb2 dispatch at ctx0's X slot (reads see pre-edge pend values)
+      if band(cstate0 == 5, band(x_seat_r == 0, bnot(x_en_r))) == 1 do
+        pc_c0 = 0
+        pc_r0 = 0
+        pc_h0 = 0
+
+        if pc_h0 == 1 do
+          cstate0 = 6
+        else
+          if pc_r0 == 1 do
+            cstate0 = 3
+          else
+            if pc_c0 == 1 do
+              cstate0 = 2
+            else
+              cstate0 = 1
+            end
+          end
+        end
+      end
+
+      # drain retire BEFORE commit: a same-cycle new commit must win dp0
+      if band(drain_done, drain_done_seat == 0) == 1 do
+        dp0 = 0
+      end
+
+      # F-slot claims for ctx0
+      if band(commit, seat == 0) == 1 do
+        pc0 = tgt0
+        cstate0 = 1
+        dp0 = 1
+      end
+
+      if band(claim_ret, seat == 0) == 1 do
+        cstate0 = 4
+      end
+
+      if band(cwb_en, cwb_seat == 0) == 1 do
+        cstate0 = 1
+      end
+
+      if band(peek_claim, seat == 0) == 1 do
+        cstate0 = 11
+      end
+
+      if band(take_claim, seat == 0) == 1 do
+        cstate0 = 13
+      end
+
+      if band(send_claim, seat == 0) == 1 do
+        cstate0 = 16
+      end
+
+      # the flit stream retired: the sender resumes at the next bundle
+      if band(ser_done, ser_done_seat == 0) == 1 do
+        pc0 = pc0 + 1
+        cstate0 = 1
+      end
+
+      # the remote sup packet was accepted: the op is fire-and-forget
+      # (the model's `wire/4` returns immediately), so the context
+      # resumes at the next bundle
+      if band(sup_done, sup_done_seat == 0) == 1 do
+        pc0 = pc0 + 1
+        cstate0 = 1
+      end
+
+      # the rebuild retires: the take always resumes at the next bundle
+      if band(deser_done, deser_done_seat == 0) == 1 do
+        pc0 = pc0 + 1
+        cstate0 = 1
+      end
+
+      # the scan retires: hit resumes at the next bundle, miss takes the
+      # none-label the peek latched
+      if band(scan_done, scan_done_seat == 0) == 1 do
+        if scan_hit == 1 do
+          if scan_long == 1 do
+            # park for the rebuild; `deser_done` is what advances the pc
+            cstate0 = 14
+          else
+            # hold for the peeked word's writeback (entry 38)
+            cstate0 = 19
+          end
+        else
+          pc0 = tgt0
+          cstate0 = 1
+        end
+      end
+
+      if band(pkw_done, pkw_done_seat == 0) == 1 do
+        pc0 = pc0 + 1
+        cstate0 = 1
+      end
+
+      # a message arrived: the blocked context resumes past its wait
+      if band(unblock_en, unblock_seat == 0) == 1 do
+        pc0 = unblock_jump * unblock_pc + bnot(unblock_jump) * (pc0 + 1)
+        cstate0 = 1
+      end
+
+      # the collection retired: the parked bundle runs AGAIN. The pc
+      # was never advanced, so this is a resume that repeats rather
+      # than one that continues — the only park in the machine that
+      # does.
+      if band(band(gc_res4 >>> 0, 1), cstate0 == 17) == 1 do
+        cstate0 = 1
+      end
+
+      if band(ftgt_en, ftgt_seat == 0) == 1 do
+        tgt0 = ftgt_pc
+      end
+
+      if band(bad_en, bad_seat == 0) == 1 do
+        cstate0 = 7
+        sfl = 1
+        sfl_seat = 0
+      end
+
+      if band(kill_en, kill_seat == 0) == 1 do
+        cstate0 = 7
+        sfl = 1
+        sfl_seat = 0
+      end
+
+      if band(spawn_go, seat == 0) == 1 do
+        pc0 = pc0 + 1
+        cstate0 = 1
+      end
+
+      if band(spawn_die, seat == 0) == 1 do
+        cstate0 = 7
+        sfl = 1
+        sfl_seat = 0
+      end
+
+      # fill completion: dest turn redirects to the popped link
+      if band(dest_wr, fill_owner == 0) == 1 do
+        if dest_mode == 1 do
+          cstate0 = 1
+        else
+          pc0 = ret_pc_in
+          cstate0 = 1
+        end
+      end
+
+      if band(seat_clr, seat_idx == 0) == 1 do
+        cstate0 = 0
+      end
+
+      if band(seat_wr, seat_idx == 0) == 1 do
+        cstate0 = 1
+        pc0 = seat_pc
+        dp0 = 0
+      end
+
+      # ---- ctx 1 ----
+      if band(x_en_r, x_seat_r == 1) == 1 do
+        # `notes/40` — a heap that has run out is a REQUEST, not a
+        # fault. The bundle parks here with its pc untouched, so the
+        # collection is followed by the SAME bundle running again
+        # against a compacted heap. Nothing of the allocation has to
+        # be latched and carried across the pause, because nothing
+        # of it happened: the store refuses the bump on `heap_full`.
+        if gc_park == 1 do
+          cstate1 = 17
+        else
+        if fault_in == 1 do
+          # a live catch turns the fault into a landing instead of a
+          # death: state 3 (the ret path, with an absolute pop) when the
+          # frames have to be unwound first, state 20 when they do not
+          if catch_go == 1 do
+            pc1 = catch_pc
+
+            if catch_deep == 1 do
+              cstate1 = 3
+            else
+              cstate1 = 20
+            end
+          else
+            cstate1 = 7
+          end
+        else
+          if has_wb2 == 1 do
+            pc_c1 = is_call
+            pc_r1 = is_ret
+            pc_h1 = is_halt
+
+            if is_call == 1 do
+              tgt1 = pc_target
+            end
+
+            if band(bnot(is_call), band(bnot(is_ret), bnot(is_halt))) == 1 do
+              if is_jump == 1 do
+                pc1 = pc_target
+              else
+                pc1 = pc1 + 1
+              end
+            end
+
+            cstate1 = 5
+          else
+            if is_halt == 1 do
+              cstate1 = 6
+            else
+              if is_ret == 1 do
+                cstate1 = 3
+              else
+                if is_rpeek == 1 do
+                  # the none-label rides the same target latch a call uses
+                  tgt1 = pc_target
+                  cstate1 = 10
+                else
+                if park_long == 1 do
+                  cstate1 = is_rtake_long * 14 + is_send_long * 15 + is_sup_rem * 18
+                else
+                if is_rwait_blk == 1 do
+                  cstate1 = 12
+                else
+                if is_spawn == 1 do
+                  # the callee entry rides the SAME per-context target
+                  # latch a call uses; the commit is at a later F slot
+                  tgt1 = pc_target
+                  cstate1 = 9
+                else
+                if is_cfun == 1 do
+                  # a call whose target arrives a cycle later, through
+                  # `ftgt_*`. The park is the ordinary call park; only
+                  # the source of `tgt` differs (`notes/42`).
+                  cstate1 = 2
+                else
+                if is_call == 1 do
+                  cstate1 = 2
+                  tgt1 = pc_target
+                else
+                  if is_jump == 1 do
+                    pc1 = pc_target
+                  else
+                    pc1 = pc1 + 1
+                  end
+                end
+                end
+                end
+                end
+                end
+              end
+              end
+            end
+          end
+        end
+        end
+      end
+
+      if band(cstate1 == 5, band(x_seat_r == 1, bnot(x_en_r))) == 1 do
+        pc_c1 = 0
+        pc_r1 = 0
+        pc_h1 = 0
+
+        if pc_h1 == 1 do
+          cstate1 = 6
+        else
+          if pc_r1 == 1 do
+            cstate1 = 3
+          else
+            if pc_c1 == 1 do
+              cstate1 = 2
+            else
+              cstate1 = 1
+            end
+          end
+        end
+      end
+
+      if band(drain_done, drain_done_seat == 1) == 1 do
+        dp1 = 0
+      end
+
+      if band(commit, seat == 1) == 1 do
+        pc1 = tgt1
+        cstate1 = 1
+        dp1 = 1
+      end
+
+      if band(claim_ret, seat == 1) == 1 do
+        cstate1 = 4
+      end
+
+      if band(cwb_en, cwb_seat == 1) == 1 do
+        cstate1 = 1
+      end
+
+      if band(peek_claim, seat == 1) == 1 do
+        cstate1 = 11
+      end
+
+      if band(take_claim, seat == 1) == 1 do
+        cstate1 = 13
+      end
+
+      if band(send_claim, seat == 1) == 1 do
+        cstate1 = 16
+      end
+
+      # the flit stream retired: the sender resumes at the next bundle
+      if band(ser_done, ser_done_seat == 1) == 1 do
+        pc1 = pc1 + 1
+        cstate1 = 1
+      end
+
+      # the remote sup packet was accepted: the op is fire-and-forget
+      # (the model's `wire/4` returns immediately), so the context
+      # resumes at the next bundle
+      if band(sup_done, sup_done_seat == 1) == 1 do
+        pc1 = pc1 + 1
+        cstate1 = 1
+      end
+
+      # the rebuild retires: the take always resumes at the next bundle
+      if band(deser_done, deser_done_seat == 1) == 1 do
+        pc1 = pc1 + 1
+        cstate1 = 1
+      end
+
+      # the scan retires: hit resumes at the next bundle, miss takes the
+      # none-label the peek latched
+      if band(scan_done, scan_done_seat == 1) == 1 do
+        if scan_hit == 1 do
+          if scan_long == 1 do
+            # park for the rebuild; `deser_done` is what advances the pc
+            cstate1 = 14
+          else
+            # hold for the peeked word's writeback (entry 38)
+            cstate1 = 19
+          end
+        else
+          pc1 = tgt1
+          cstate1 = 1
+        end
+      end
+
+      if band(pkw_done, pkw_done_seat == 1) == 1 do
+        pc1 = pc1 + 1
+        cstate1 = 1
+      end
+
+      # a message arrived: the blocked context resumes past its wait
+      if band(unblock_en, unblock_seat == 1) == 1 do
+        pc1 = unblock_jump * unblock_pc + bnot(unblock_jump) * (pc1 + 1)
+        cstate1 = 1
+      end
+
+      # the collection retired: the parked bundle runs AGAIN. The pc
+      # was never advanced, so this is a resume that repeats rather
+      # than one that continues — the only park in the machine that
+      # does.
+      if band(band(gc_res4 >>> 1, 1), cstate1 == 17) == 1 do
+        cstate1 = 1
+      end
+
+      if band(ftgt_en, ftgt_seat == 1) == 1 do
+        tgt1 = ftgt_pc
+      end
+
+      if band(bad_en, bad_seat == 1) == 1 do
+        cstate1 = 7
+        sfl = 1
+        sfl_seat = 1
+      end
+
+      if band(kill_en, kill_seat == 1) == 1 do
+        cstate1 = 7
+        sfl = 1
+        sfl_seat = 1
+      end
+
+      if band(spawn_go, seat == 1) == 1 do
+        pc1 = pc1 + 1
+        cstate1 = 1
+      end
+
+      if band(spawn_die, seat == 1) == 1 do
+        cstate1 = 7
+        sfl = 1
+        sfl_seat = 1
+      end
+
+      if band(dest_wr, fill_owner == 1) == 1 do
+        if dest_mode == 1 do
+          cstate1 = 1
+        else
+          pc1 = ret_pc_in
+          cstate1 = 1
+        end
+      end
+
+      if band(seat_clr, seat_idx == 1) == 1 do
+        cstate1 = 0
+      end
+
+      if band(seat_wr, seat_idx == 1) == 1 do
+        cstate1 = 1
+        pc1 = seat_pc
+        dp1 = 0
+      end
+
+      # ---- ctx 2 ----
+      if band(x_en_r, x_seat_r == 2) == 1 do
+        # `notes/40` — a heap that has run out is a REQUEST, not a
+        # fault. The bundle parks here with its pc untouched, so the
+        # collection is followed by the SAME bundle running again
+        # against a compacted heap. Nothing of the allocation has to
+        # be latched and carried across the pause, because nothing
+        # of it happened: the store refuses the bump on `heap_full`.
+        if gc_park == 1 do
+          cstate2 = 17
+        else
+        if fault_in == 1 do
+          # a live catch turns the fault into a landing instead of a
+          # death: state 3 (the ret path, with an absolute pop) when the
+          # frames have to be unwound first, state 20 when they do not
+          if catch_go == 1 do
+            pc2 = catch_pc
+
+            if catch_deep == 1 do
+              cstate2 = 3
+            else
+              cstate2 = 20
+            end
+          else
+            cstate2 = 7
+          end
+        else
+          if has_wb2 == 1 do
+            pc_c2 = is_call
+            pc_r2 = is_ret
+            pc_h2 = is_halt
+
+            if is_call == 1 do
+              tgt2 = pc_target
+            end
+
+            if band(bnot(is_call), band(bnot(is_ret), bnot(is_halt))) == 1 do
+              if is_jump == 1 do
+                pc2 = pc_target
+              else
+                pc2 = pc2 + 1
+              end
+            end
+
+            cstate2 = 5
+          else
+            if is_halt == 1 do
+              cstate2 = 6
+            else
+              if is_ret == 1 do
+                cstate2 = 3
+              else
+                if is_rpeek == 1 do
+                  # the none-label rides the same target latch a call uses
+                  tgt2 = pc_target
+                  cstate2 = 10
+                else
+                if park_long == 1 do
+                  cstate2 = is_rtake_long * 14 + is_send_long * 15 + is_sup_rem * 18
+                else
+                if is_rwait_blk == 1 do
+                  cstate2 = 12
+                else
+                if is_spawn == 1 do
+                  # the callee entry rides the SAME per-context target
+                  # latch a call uses; the commit is at a later F slot
+                  tgt2 = pc_target
+                  cstate2 = 9
+                else
+                if is_cfun == 1 do
+                  # a call whose target arrives a cycle later, through
+                  # `ftgt_*`. The park is the ordinary call park; only
+                  # the source of `tgt` differs (`notes/42`).
+                  cstate2 = 2
+                else
+                if is_call == 1 do
+                  cstate2 = 2
+                  tgt2 = pc_target
+                else
+                  if is_jump == 1 do
+                    pc2 = pc_target
+                  else
+                    pc2 = pc2 + 1
+                  end
+                end
+                end
+                end
+                end
+                end
+              end
+              end
+            end
+          end
+        end
+        end
+      end
+
+      if band(cstate2 == 5, band(x_seat_r == 2, bnot(x_en_r))) == 1 do
+        pc_c2 = 0
+        pc_r2 = 0
+        pc_h2 = 0
+
+        if pc_h2 == 1 do
+          cstate2 = 6
+        else
+          if pc_r2 == 1 do
+            cstate2 = 3
+          else
+            if pc_c2 == 1 do
+              cstate2 = 2
+            else
+              cstate2 = 1
+            end
+          end
+        end
+      end
+
+      if band(drain_done, drain_done_seat == 2) == 1 do
+        dp2 = 0
+      end
+
+      if band(commit, seat == 2) == 1 do
+        pc2 = tgt2
+        cstate2 = 1
+        dp2 = 1
+      end
+
+      if band(claim_ret, seat == 2) == 1 do
+        cstate2 = 4
+      end
+
+      if band(cwb_en, cwb_seat == 2) == 1 do
+        cstate2 = 1
+      end
+
+      if band(peek_claim, seat == 2) == 1 do
+        cstate2 = 11
+      end
+
+      if band(take_claim, seat == 2) == 1 do
+        cstate2 = 13
+      end
+
+      if band(send_claim, seat == 2) == 1 do
+        cstate2 = 16
+      end
+
+      # the flit stream retired: the sender resumes at the next bundle
+      if band(ser_done, ser_done_seat == 2) == 1 do
+        pc2 = pc2 + 1
+        cstate2 = 1
+      end
+
+      # the remote sup packet was accepted: the op is fire-and-forget
+      # (the model's `wire/4` returns immediately), so the context
+      # resumes at the next bundle
+      if band(sup_done, sup_done_seat == 2) == 1 do
+        pc2 = pc2 + 1
+        cstate2 = 1
+      end
+
+      # the rebuild retires: the take always resumes at the next bundle
+      if band(deser_done, deser_done_seat == 2) == 1 do
+        pc2 = pc2 + 1
+        cstate2 = 1
+      end
+
+      # the scan retires: hit resumes at the next bundle, miss takes the
+      # none-label the peek latched
+      if band(scan_done, scan_done_seat == 2) == 1 do
+        if scan_hit == 1 do
+          if scan_long == 1 do
+            # park for the rebuild; `deser_done` is what advances the pc
+            cstate2 = 14
+          else
+            # hold for the peeked word's writeback (entry 38)
+            cstate2 = 19
+          end
+        else
+          pc2 = tgt2
+          cstate2 = 1
+        end
+      end
+
+      if band(pkw_done, pkw_done_seat == 2) == 1 do
+        pc2 = pc2 + 1
+        cstate2 = 1
+      end
+
+      # a message arrived: the blocked context resumes past its wait
+      if band(unblock_en, unblock_seat == 2) == 1 do
+        pc2 = unblock_jump * unblock_pc + bnot(unblock_jump) * (pc2 + 1)
+        cstate2 = 1
+      end
+
+      # the collection retired: the parked bundle runs AGAIN. The pc
+      # was never advanced, so this is a resume that repeats rather
+      # than one that continues — the only park in the machine that
+      # does.
+      if band(band(gc_res4 >>> 2, 1), cstate2 == 17) == 1 do
+        cstate2 = 1
+      end
+
+      if band(ftgt_en, ftgt_seat == 2) == 1 do
+        tgt2 = ftgt_pc
+      end
+
+      if band(bad_en, bad_seat == 2) == 1 do
+        cstate2 = 7
+        sfl = 1
+        sfl_seat = 2
+      end
+
+      if band(kill_en, kill_seat == 2) == 1 do
+        cstate2 = 7
+        sfl = 1
+        sfl_seat = 2
+      end
+
+      if band(spawn_go, seat == 2) == 1 do
+        pc2 = pc2 + 1
+        cstate2 = 1
+      end
+
+      if band(spawn_die, seat == 2) == 1 do
+        cstate2 = 7
+        sfl = 1
+        sfl_seat = 2
+      end
+
+      if band(dest_wr, fill_owner == 2) == 1 do
+        if dest_mode == 1 do
+          cstate2 = 1
+        else
+          pc2 = ret_pc_in
+          cstate2 = 1
+        end
+      end
+
+      if band(seat_clr, seat_idx == 2) == 1 do
+        cstate2 = 0
+      end
+
+      if band(seat_wr, seat_idx == 2) == 1 do
+        cstate2 = 1
+        pc2 = seat_pc
+        dp2 = 0
+      end
+
+      # ---- ctx 3 ----
+      if band(x_en_r, x_seat_r == 3) == 1 do
+        # `notes/40` — a heap that has run out is a REQUEST, not a
+        # fault. The bundle parks here with its pc untouched, so the
+        # collection is followed by the SAME bundle running again
+        # against a compacted heap. Nothing of the allocation has to
+        # be latched and carried across the pause, because nothing
+        # of it happened: the store refuses the bump on `heap_full`.
+        if gc_park == 1 do
+          cstate3 = 17
+        else
+        if fault_in == 1 do
+          # a live catch turns the fault into a landing instead of a
+          # death: state 3 (the ret path, with an absolute pop) when the
+          # frames have to be unwound first, state 20 when they do not
+          if catch_go == 1 do
+            pc3 = catch_pc
+
+            if catch_deep == 1 do
+              cstate3 = 3
+            else
+              cstate3 = 20
+            end
+          else
+            cstate3 = 7
+          end
+        else
+          if has_wb2 == 1 do
+            pc_c3 = is_call
+            pc_r3 = is_ret
+            pc_h3 = is_halt
+
+            if is_call == 1 do
+              tgt3 = pc_target
+            end
+
+            if band(bnot(is_call), band(bnot(is_ret), bnot(is_halt))) == 1 do
+              if is_jump == 1 do
+                pc3 = pc_target
+              else
+                pc3 = pc3 + 1
+              end
+            end
+
+            cstate3 = 5
+          else
+            if is_halt == 1 do
+              cstate3 = 6
+            else
+              if is_ret == 1 do
+                cstate3 = 3
+              else
+                if is_rpeek == 1 do
+                  # the none-label rides the same target latch a call uses
+                  tgt3 = pc_target
+                  cstate3 = 10
+                else
+                if park_long == 1 do
+                  cstate3 = is_rtake_long * 14 + is_send_long * 15 + is_sup_rem * 18
+                else
+                if is_rwait_blk == 1 do
+                  cstate3 = 12
+                else
+                if is_spawn == 1 do
+                  # the callee entry rides the SAME per-context target
+                  # latch a call uses; the commit is at a later F slot
+                  tgt3 = pc_target
+                  cstate3 = 9
+                else
+                if is_cfun == 1 do
+                  # a call whose target arrives a cycle later, through
+                  # `ftgt_*`. The park is the ordinary call park; only
+                  # the source of `tgt` differs (`notes/42`).
+                  cstate3 = 2
+                else
+                if is_call == 1 do
+                  cstate3 = 2
+                  tgt3 = pc_target
+                else
+                  if is_jump == 1 do
+                    pc3 = pc_target
+                  else
+                    pc3 = pc3 + 1
+                  end
+                end
+                end
+                end
+                end
+                end
+              end
+              end
+            end
+          end
+        end
+        end
+      end
+
+      if band(cstate3 == 5, band(x_seat_r == 3, bnot(x_en_r))) == 1 do
+        pc_c3 = 0
+        pc_r3 = 0
+        pc_h3 = 0
+
+        if pc_h3 == 1 do
+          cstate3 = 6
+        else
+          if pc_r3 == 1 do
+            cstate3 = 3
+          else
+            if pc_c3 == 1 do
+              cstate3 = 2
+            else
+              cstate3 = 1
+            end
+          end
+        end
+      end
+
+      if band(drain_done, drain_done_seat == 3) == 1 do
+        dp3 = 0
+      end
+
+      if band(commit, seat == 3) == 1 do
+        pc3 = tgt3
+        cstate3 = 1
+        dp3 = 1
+      end
+
+      if band(claim_ret, seat == 3) == 1 do
+        cstate3 = 4
+      end
+
+      if band(cwb_en, cwb_seat == 3) == 1 do
+        cstate3 = 1
+      end
+
+      if band(peek_claim, seat == 3) == 1 do
+        cstate3 = 11
+      end
+
+      if band(take_claim, seat == 3) == 1 do
+        cstate3 = 13
+      end
+
+      if band(send_claim, seat == 3) == 1 do
+        cstate3 = 16
+      end
+
+      # the flit stream retired: the sender resumes at the next bundle
+      if band(ser_done, ser_done_seat == 3) == 1 do
+        pc3 = pc3 + 1
+        cstate3 = 1
+      end
+
+      # the remote sup packet was accepted: the op is fire-and-forget
+      # (the model's `wire/4` returns immediately), so the context
+      # resumes at the next bundle
+      if band(sup_done, sup_done_seat == 3) == 1 do
+        pc3 = pc3 + 1
+        cstate3 = 1
+      end
+
+      # the rebuild retires: the take always resumes at the next bundle
+      if band(deser_done, deser_done_seat == 3) == 1 do
+        pc3 = pc3 + 1
+        cstate3 = 1
+      end
+
+      # the scan retires: hit resumes at the next bundle, miss takes the
+      # none-label the peek latched
+      if band(scan_done, scan_done_seat == 3) == 1 do
+        if scan_hit == 1 do
+          if scan_long == 1 do
+            # park for the rebuild; `deser_done` is what advances the pc
+            cstate3 = 14
+          else
+            # hold for the peeked word's writeback (entry 38)
+            cstate3 = 19
+          end
+        else
+          pc3 = tgt3
+          cstate3 = 1
+        end
+      end
+
+      if band(pkw_done, pkw_done_seat == 3) == 1 do
+        pc3 = pc3 + 1
+        cstate3 = 1
+      end
+
+      # a message arrived: the blocked context resumes past its wait
+      if band(unblock_en, unblock_seat == 3) == 1 do
+        pc3 = unblock_jump * unblock_pc + bnot(unblock_jump) * (pc3 + 1)
+        cstate3 = 1
+      end
+
+      # the collection retired: the parked bundle runs AGAIN. The pc
+      # was never advanced, so this is a resume that repeats rather
+      # than one that continues — the only park in the machine that
+      # does.
+      if band(band(gc_res4 >>> 3, 1), cstate3 == 17) == 1 do
+        cstate3 = 1
+      end
+
+      if band(ftgt_en, ftgt_seat == 3) == 1 do
+        tgt3 = ftgt_pc
+      end
+
+      if band(bad_en, bad_seat == 3) == 1 do
+        cstate3 = 7
+        sfl = 1
+        sfl_seat = 3
+      end
+
+      if band(kill_en, kill_seat == 3) == 1 do
+        cstate3 = 7
+        sfl = 1
+        sfl_seat = 3
+      end
+
+      if band(spawn_go, seat == 3) == 1 do
+        pc3 = pc3 + 1
+        cstate3 = 1
+      end
+
+      if band(spawn_die, seat == 3) == 1 do
+        cstate3 = 7
+        sfl = 1
+        sfl_seat = 3
+      end
+
+      if band(dest_wr, fill_owner == 3) == 1 do
+        if dest_mode == 1 do
+          cstate3 = 1
+        else
+          pc3 = ret_pc_in
+          cstate3 = 1
+        end
+      end
+
+      if band(seat_clr, seat_idx == 3) == 1 do
+        cstate3 = 0
+      end
+
+      if band(seat_wr, seat_idx == 3) == 1 do
+        cstate3 = 1
+        pc3 = seat_pc
+        dp3 = 0
+      end
+    end
+  end
+end

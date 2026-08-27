@@ -234,6 +234,21 @@ a bad tag. The supervisor restarts it. An LED changes state. `one_for_one`, and
 there is no processor in the loop — link table, exit signal and restart are all
 fabric.
 
+**Refinement (2026-08-22):** "restart is fabric" oversells by one layer, and
+the honest split is stronger. Supervision = mechanism + policy. The
+*mechanism* — link/monitor tables, crash detection, exit-signal propagation,
+`trap_exit`, PID-serial incarnation checks — is fabric with hard bounds. The
+restart *policy* (one_for_one, intensity limits, escalation) is an ordinary
+resident process in Core Erlang, deliberately: escalation is recursive
+policy, and recursive policy in gates is scope creep (the picoJava lesson).
+The demo's claim becomes "mechanism in gates, policy in ~fifty bounded
+lines, and a WCET for the whole fault-to-restart path" — which no OTP
+system can state. Hardware-emitted exit reasons use reserved atom indices
+so the fault path is allocation-free (an exit signal that must allocate on
+a full heap is a deadlock). See `10-userland.md` for how this extends to
+peripherals: a port's restart is a reset pulse plus a serial bump, so the
+supervision tree is the recovery model for the whole chip.
+
 ## The SDRAM tension, and why it dissolves
 
 The ULX3S has 32 MB of SDRAM, which is the only way to get from tens of

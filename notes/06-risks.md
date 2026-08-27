@@ -2,7 +2,25 @@
 
 Ordered by how much. The first one is not a risk, it is a blocker.
 
-## BLOCKER — the simulator cannot simulate a processor
+## ~~BLOCKER~~ — RESOLVED. The simulator now runs at ~350 ticks/s
+
+Fixed as M0, in EHDL (`Hw.Sim.Schedule` + `Hw.Sim.Entity`): 4 → **344–362
+ticks/s (~87×)** on `HelloBoard.Top`. A megacycle benchmark is now ~47
+minutes, a 115200-baud UART byte ~13 s. Equivalence against the legacy path
+verified by reg-next diff (94/94 identical) and 480-tick lockstep (0
+divergent signals); the legacy path survives behind `HW_SIM_TOP_FULL=1`.
+Full record, including three latent EHDL bugs surfaced along the way, in
+`../ehdl/AGENTS.md`.
+
+Still true: ~350 ticks/s is not fast enough for M3+ inner development loops.
+The remaining cost is genuinely distributed across entities, so the next
+order of magnitude is the Rust NIF backend (`Hw.Sim.Backend.Nif` — exists,
+unused by `Hw.Sim.start`). That is an optimisation to schedule, not a
+blocker to clear.
+
+The original diagnosis, kept for the record:
+
+## (historical) BLOCKER — the simulator cannot simulate a processor
 
 **EHDL's simulator runs at ~4 ticks/s** on `HelloBoard.Top`. At that rate:
 
@@ -33,32 +51,54 @@ application, so `:eprof` and `:fprof` are both unavailable.
 
 ## Then, in rough order of cost
 
-### Elaborator atom exhaustion, made worse by exactly this design
+### Elaborator atom exhaustion — PROBED, RETIRED
 
-EHDL's test suite already needs `ERL_FLAGS="+t 8000000"` because something mints
-atoms per elaboration — probably generated signal names. A `generate` over nine
-engines, each a CPU's worth of signals, multiplies that by an order of
-magnitude.
+Probe B ran early (`../ehdl/_prim/probe_b.exs`): elaborating a small engine
+costs +183 atoms, a 9× fabric of it +306 more, and re-elaborating the same
+fabric costs **+0** — EHDL's Gensym is a deterministic per-elaboration
+counter, so the same design mints the same names and atoms are only paid
+once. Even the default 1M table has four orders of magnitude of headroom.
+Bet 4 is safe from this side.
 
-**This risk is specific to the elastic-fabric idea.** It should be probed at M1
-with a trivial replicated component, not discovered at M6 with a real one. If it
-does not scale, Bet 4 needs rethinking and it is much cheaper to know that
-before the engine exists.
+Two adjacent findings from the same probe, worth more than the retired risk:
 
-### No Lattice primitives in EHDL's stdlib
+- **`generate` cannot replicate `instance` declarations** — its body goes
+  through `Parse.parse_statements`, so it replicates comb statements only.
+  The fit-model sketch of `generate ... instance ...` does not parse today.
+- **A compile-time `for` comprehension over `wire`/`instance` works** — a
+  component body is ordinary Elixir, and module attributes accumulate inside
+  the loop. Bet 4's "shape is a computed value" mechanism therefore exists
+  with no DSL work: `for i <- 0..(n-1) do wire(...); instance(...) end`,
+  proven in the probe.
 
-`lib/hw/std/xilinx/` has fourteen wrappers — `BUFG`, `IBUFDS`, `IDDR`, `OBUF`,
-`PS7`, `DSP48E1`, `MMCME2_BASE`, `PLLE2_BASE`, `ODDR`, `OBUFDS`, and more. There
-is **no `lattice/` directory at all.** Every memory in this design rides on
-`memory` inference plus the `ram_style` attribute the emitter sets. (The emitter
-does know about ECP5 — there's a comment in `lib/hw/emit/verilog.ex` about a
-registered-read memory mapping to a real EBR and yosys's `memory_libmap` /
-`memory_bram` passes honouring the attribute.)
+### No Lattice primitives in EHDL's stdlib — PROBED, the part that gates us is CONFIRMED
 
-Bet 3 and the **entire GC argument** depend on true dual-port EBR with
-independent ports. **Verify that inference produces `DP16KD` and not distributed
-LUT-RAM before designing around it.** Half a day of work, and it gates the
-architecture. This is Probe A in `AGENTS.md`.
+There is still no `lattice/` directory, but Probe A settled the question that
+mattered (`../ehdl/_prim/probe_a.exs`, `probe_a2.exs`): a 512 × 36 `memory`
+with `sync_read:` — exactly one deep-configured EBR, picoBEAM's term width —
+synthesises through yosys `synth_ecp5` to **exactly one `DP16KD` cell and
+zero other logic**, in both shapes that the architecture needs:
+
+- single clock, write port + independent sync-read port (heap/engine idiom);
+- two clocks, write on `wr_clk`, read on `rd_clk` (mailbox/CDC-inside-BRAM
+  idiom).
+
+No distributed LUT-RAM anywhere. Bet 1's memory substrate is real.
+
+Three residual gaps, now known rather than suspected:
+
+1. **Emitter reserved-word bug:** memory names are emitted verbatim, and
+   `buf` is a Verilog primitive keyword — `Hw.StreamBRAMFIFO` cannot be
+   emitted standalone today. picoBEAM memories get non-keyword names until
+   the emitter escapes or rejects them.
+2. **One write site per memory.** `memory` + `on` expresses 1W + 1R. Bacon's
+   collector wants both ports read/write (mutator A, collector B). This is
+   the actual DSL work item that gates M5 — smaller than it sounds, but it
+   exists.
+3. **The simulator cannot model memory writes** (the standing MemWrite
+   item), so anything with a written `memory` is synthesis-only for now.
+   M2's engine either fixes that or keeps its state in registers during
+   bring-up.
 
 ### Single-process latency is T× worse
 

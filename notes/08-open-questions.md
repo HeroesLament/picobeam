@@ -161,6 +161,74 @@ application is control rather than throughput, T should not scale up with
 engines.
 ---
 
+## Q1 — DECIDED (2026-08-22): register file, clean-on-call
+
+The ECOMP experiment gets run in full — it is the one idea from the deck
+nobody has re-tested in 26 years, and testing it is a stated reason this
+project exists. Consequences accepted with it: Actora stops being a direct
+LUT/Fmax calibration point (the fit table's ±50% stays wide until M2), code
+density likely worsens, and the register-window mechanism — a per-context
+register stack with the top frames resident, spill/fill against frame RAM;
+JOP's stack cache reborn as a frame cache — becomes M2's hardest sizing
+item. In exchange, Core Erlang compiles more directly than to a stack
+(let-bound single assignment ↦ fresh registers), and the calling convention
+is genuinely save/restore-free. The stack machine becomes the M2b
+comparison variant instead of the baseline. The reference model
+(`lib/pico_beam/machine.ex`) enforces single assignment at runtime: reading
+a register the window never wrote is a fault.
+
+---
+
+## Q4 — DECIDED (2026-08-22), in two parts
+
+**Issue width: 3-slot LIW from day one** — full ECOMP fidelity, chosen with
+the costs on the table: ~6R3W register file (engine LUT estimate rises;
+M2 measures by how much), 72-bit bundles (two code words per fetch), and a
+slot-scheduling compiler. The payoff: a bundle recovers up to 3× per
+context turn, directly softening the barrel's T× single-process penalty.
+The bundle contract that keeps hardware bypass-free is enforced by the
+assembler (`lib/pico_beam/asm.ex`): slots read pre-bundle state; no
+cross-slot RAW/WAW (same-slot read-old/write-new is fine); ≤1 heap op;
+≤1 system op, last slot.
+
+**Housekeeping: autonomous port-B FSMs, not an instruction slot.** The
+housekeeping work (mailbox enqueue, exit-signal hops, timer wheel) is
+machine-state-driven, not compiler-chosen — it needs a guaranteed cycle
+share, not encoding bits. FSMs on second BRAM ports run every cycle by
+construction, so the rate guarantee is stronger than ECOMP's slot and holds
+even when no instructions flow. The original "loses the guarantee"
+objection applied only under port contention, which dual-ported BRAM
+removes.
+
+---
+
+## Q5, revisited — the method cache is also the memory hierarchy
+
+The boot/image design (`11-boot-and-images.md`) adds a second argument for
+building the cache at M2: with it, the code image can live in SDRAM (loaded
+from SD at boot) with EBR as the method cache — lifting the ~34 KB code
+ceiling to the 32 MB SDRAM while keeping JOP's worst-case-analysable miss
+behaviour (misses only at call/return). Without it, application size is
+bounded by block RAM forever. The original question was WCET vs schedule;
+it is now WCET *and* capacity vs schedule, which strengthens the "build it
+at M2" leaning.
+
+---
+
+## Q8, revisited — resolved by the boundary declaration
+
+Settled in `10-userland.md`, more precisely than the leaning above: **ports
+as processes for the asynchronous world, declared-latency SIFs
+(Silicon-Implemented Functions) for the synchronous one, both generated
+from a single `api` declaration on the component — and the `PORT_READ`
+escape hatch deleted.** An undeclared poke into fabric is exactly the ABI
+drift the single-declaration scheme exists to prevent. SIFs must declare a
+worst-case latency at elaboration (linter-enforced); anything unbounded
+must be a port message. The barrel makes a stalled SIF caller cost only its
+own context's slots — the dirty-NIF problem is unrepresentable.
+
+---
+
 ## Q2, revisited — T is application-dependent
 
 See `09-use-case-motion.md`. FOC argues for T = 4, because T divides

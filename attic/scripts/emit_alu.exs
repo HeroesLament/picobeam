@@ -1,0 +1,5 @@
+File.mkdir_p!("_emit/alu")
+design = Hw.Compile.Elaborate.elaborate(PicoBEAM.RTL.Alu)
+v = Hw.emit(design)
+File.write!("_emit/alu/alu.v", v)
+IO.puts("alu: bytes=#{byte_size(v)}")
