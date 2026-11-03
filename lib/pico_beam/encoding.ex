@@ -542,6 +542,9 @@ defmodule PicoBEAM.Encoding do
   defp pool_word(v) when is_integer(v) and v >= 0 and v < 1 <<< 36, do: v
   defp pool_word(v) when is_integer(v), do: Term.int(v)
   defp pool_word({:atom, i}), do: Term.atom(i)
+  # a tagged word the program cannot spell any other way: `erlang:host/0`'s
+  # pid on ring node 15
+  defp pool_word({:raw, w}) when is_integer(w) and w >= 0 and w < 1 <<< 36, do: w
 
   # The fun's VISIBLE arity is the lifted function's arity minus one: the
   # closure rides as the last parameter and the captured variables are

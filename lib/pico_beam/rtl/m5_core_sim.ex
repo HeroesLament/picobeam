@@ -39,6 +39,14 @@ defmodule PicoBEAM.RTL.M5CoreSim do
   output :ftdi_rxd, 1
 
   instance :core, PicoBEAM.RTL.M5Core,
+    # no host port on this top (`RingHost`'s host-in / host-out)
+    hin_en: 0,
+    hin_head: 0,
+    hin_kind: 0,
+    hin_deng: 0,
+    hin_word: 0,
+    hin_len: 0,
+    hout_pop: 0,
     PWRWAIT: 64,
     HALF: 2,
     UDIV: 8,

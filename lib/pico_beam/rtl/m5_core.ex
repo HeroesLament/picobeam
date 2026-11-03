@@ -121,6 +121,24 @@ defmodule PicoBEAM.RTL.M5Core do
   output :obs_e1b, 32
   output :obs_e1c, 32
   output :obs_g, 32
+  # ---- host port (`RingHost`, node 15): one flit per push / pop, in this
+  # clock domain; `Xc7M5Top` carries them across from AXI
+  input :hin_en, 1
+  input :hin_head, 1
+  input :hin_kind, 4
+  input :hin_deng, 4
+  input :hin_word, 36
+  input :hin_len, 7
+  output :hin_ready, 1
+  output :hin_depth, 6
+  output :hout_valid, 1
+  output :hout_head, 1
+  output :hout_kind, 4
+  output :hout_deng, 4
+  output :hout_word, 36
+  output :hout_len, 7
+  input :hout_pop, 1
+  output :hout_depth, 6
 
   # ---- the loader
   wire :sd_busy, 1
@@ -294,6 +312,51 @@ defmodule PicoBEAM.RTL.M5Core do
   wire :b_rlen, 7
   wire :b_pop, 1
   wire :b_depth, 6
+
+  # ---- the host as ring node 15 (`RingHost`): engine-side ring ports,
+  # host-in read side, host-out write side
+  wire :e0w_en, 1
+  wire :e0w_head, 1
+  wire :e0w_kind, 4
+  wire :e0w_deng, 4
+  wire :e0w_word, 36
+  wire :e0w_len, 7
+  wire :e0w_ready, 1
+  wire :e0r_valid, 1
+  wire :e0r_head, 1
+  wire :e0r_kind, 4
+  wire :e0r_deng, 4
+  wire :e0r_word, 36
+  wire :e0r_len, 7
+  wire :e0r_pop, 1
+  wire :e1w_en, 1
+  wire :e1w_head, 1
+  wire :e1w_kind, 4
+  wire :e1w_deng, 4
+  wire :e1w_word, 36
+  wire :e1w_len, 7
+  wire :e1w_ready, 1
+  wire :e1r_valid, 1
+  wire :e1r_head, 1
+  wire :e1r_kind, 4
+  wire :e1r_deng, 4
+  wire :e1r_word, 36
+  wire :e1r_len, 7
+  wire :e1r_pop, 1
+  wire :hi_valid, 1
+  wire :hi_rhead, 1
+  wire :hi_rkind, 4
+  wire :hi_rdeng, 4
+  wire :hi_rword, 36
+  wire :hi_rlen, 7
+  wire :hi_pop, 1
+  wire :ho_en, 1
+  wire :ho_head, 1
+  wire :ho_kind, 4
+  wire :ho_deng, 4
+  wire :ho_word, 36
+  wire :ho_len, 7
+  wire :ho_ready, 1
 
   # ---- instrument
   wire :act0, 4
@@ -550,6 +613,118 @@ defmodule PicoBEAM.RTL.M5Core do
     die2_slot: :nm1_dslot,
     die2_serial: :nm1_dser
 
+  instance :hub, PicoBEAM.RTL.RingHost,
+    clk: :clk_12,
+    rst: :rst,
+    e0w_en: :e0w_en,
+    e0w_head: :e0w_head,
+    e0w_kind: :e0w_kind,
+    e0w_deng: :e0w_deng,
+    e0w_word: :e0w_word,
+    e0w_len: :e0w_len,
+    e0w_ready: :e0w_ready,
+    e1w_en: :e1w_en,
+    e1w_head: :e1w_head,
+    e1w_kind: :e1w_kind,
+    e1w_deng: :e1w_deng,
+    e1w_word: :e1w_word,
+    e1w_len: :e1w_len,
+    e1w_ready: :e1w_ready,
+    a_en: :a_en,
+    a_head: :a_head,
+    a_kind: :a_kind,
+    a_deng: :a_deng,
+    a_word: :a_word,
+    a_len: :a_len,
+    a_ready: :a_ready,
+    b_en: :b_en,
+    b_head: :b_head,
+    b_kind: :b_kind,
+    b_deng: :b_deng,
+    b_word: :b_word,
+    b_len: :b_len,
+    b_ready: :b_ready,
+    ho_en: :ho_en,
+    ho_head: :ho_head,
+    ho_kind: :ho_kind,
+    ho_deng: :ho_deng,
+    ho_word: :ho_word,
+    ho_len: :ho_len,
+    ho_ready: :ho_ready,
+    a_valid: :a_valid,
+    a_rhead: :a_rhead,
+    a_rkind: :a_rkind,
+    a_rdeng: :a_rdeng,
+    a_rword: :a_rword,
+    a_rlen: :a_rlen,
+    a_pop: :a_pop,
+    b_valid: :b_valid,
+    b_rhead: :b_rhead,
+    b_rkind: :b_rkind,
+    b_rdeng: :b_rdeng,
+    b_rword: :b_rword,
+    b_rlen: :b_rlen,
+    b_pop: :b_pop,
+    hi_valid: :hi_valid,
+    hi_rhead: :hi_rhead,
+    hi_rkind: :hi_rkind,
+    hi_rdeng: :hi_rdeng,
+    hi_rword: :hi_rword,
+    hi_rlen: :hi_rlen,
+    hi_pop: :hi_pop,
+    e0r_valid: :e0r_valid,
+    e0r_head: :e0r_head,
+    e0r_kind: :e0r_kind,
+    e0r_deng: :e0r_deng,
+    e0r_word: :e0r_word,
+    e0r_len: :e0r_len,
+    e0r_pop: :e0r_pop,
+    e1r_valid: :e1r_valid,
+    e1r_head: :e1r_head,
+    e1r_kind: :e1r_kind,
+    e1r_deng: :e1r_deng,
+    e1r_word: :e1r_word,
+    e1r_len: :e1r_len,
+    e1r_pop: :e1r_pop
+
+  instance :link_hin, PicoBEAM.RTL.RingLink,
+    clk: :clk_12,
+    rst: :rst,
+    w_en: :hin_en,
+    w_head: :hin_head,
+    w_kind: :hin_kind,
+    w_deng: :hin_deng,
+    w_word: :hin_word,
+    w_len: :hin_len,
+    w_ready: :hin_ready,
+    r_valid: :hi_valid,
+    r_head: :hi_rhead,
+    r_kind: :hi_rkind,
+    r_deng: :hi_rdeng,
+    r_word: :hi_rword,
+    r_len: :hi_rlen,
+    r_pop: :hi_pop,
+    depth: :hin_depth
+
+  instance :link_hout, PicoBEAM.RTL.RingLink,
+    clk: :clk_12,
+    rst: :rst,
+    w_en: :ho_en,
+    w_head: :ho_head,
+    w_kind: :ho_kind,
+    w_deng: :ho_deng,
+    w_word: :ho_word,
+    w_len: :ho_len,
+    w_ready: :ho_ready,
+    r_valid: :hout_valid,
+    r_head: :hout_head,
+    r_kind: :hout_kind,
+    r_deng: :hout_deng,
+    r_word: :hout_word,
+    r_len: :hout_len,
+    r_pop: :hout_pop,
+    depth: :hout_depth
+
   instance :link_ab, PicoBEAM.RTL.RingLink,
     clk: :clk_12,
     rst: :rst,
@@ -601,20 +776,20 @@ defmodule PicoBEAM.RTL.M5Core do
     ld_pool_data: :ld_pd,
     boot_en: :boot0,
     boot_pc: :ent0,
-    ring_w_en: :a_en,
-    ring_w_head: :a_head,
-    ring_w_kind: :a_kind,
-    ring_w_deng: :a_deng,
-    ring_w_word: :a_word,
-    ring_w_len: :a_len,
-    ring_w_ready: :a_ready,
-    ring_r_valid: :b_valid,
-    ring_r_head: :b_rhead,
-    ring_r_kind: :b_rkind,
-    ring_r_deng: :b_rdeng,
-    ring_r_word: :b_rword,
-    ring_r_len: :b_rlen,
-    ring_r_pop: :b_pop,
+    ring_w_en: :e0w_en,
+    ring_w_head: :e0w_head,
+    ring_w_kind: :e0w_kind,
+    ring_w_deng: :e0w_deng,
+    ring_w_word: :e0w_word,
+    ring_w_len: :e0w_len,
+    ring_w_ready: :e0w_ready,
+    ring_r_valid: :e0r_valid,
+    ring_r_head: :e0r_head,
+    ring_r_kind: :e0r_kind,
+    ring_r_deng: :e0r_deng,
+    ring_r_word: :e0r_word,
+    ring_r_len: :e0r_len,
+    ring_r_pop: :e0r_pop,
     nm_q_name: :nm0_qn,
     nm_q_hit: :nm0_qh,
     nm_q_eng: :nm0_qe,
@@ -671,20 +846,20 @@ defmodule PicoBEAM.RTL.M5Core do
     ld_pool_data: :ld_pd,
     boot_en: :boot1,
     boot_pc: :ent1,
-    ring_w_en: :b_en,
-    ring_w_head: :b_head,
-    ring_w_kind: :b_kind,
-    ring_w_deng: :b_deng,
-    ring_w_word: :b_word,
-    ring_w_len: :b_len,
-    ring_w_ready: :b_ready,
-    ring_r_valid: :a_valid,
-    ring_r_head: :a_rhead,
-    ring_r_kind: :a_rkind,
-    ring_r_deng: :a_rdeng,
-    ring_r_word: :a_rword,
-    ring_r_len: :a_rlen,
-    ring_r_pop: :a_pop,
+    ring_w_en: :e1w_en,
+    ring_w_head: :e1w_head,
+    ring_w_kind: :e1w_kind,
+    ring_w_deng: :e1w_deng,
+    ring_w_word: :e1w_word,
+    ring_w_len: :e1w_len,
+    ring_w_ready: :e1w_ready,
+    ring_r_valid: :e1r_valid,
+    ring_r_head: :e1r_head,
+    ring_r_kind: :e1r_kind,
+    ring_r_deng: :e1r_deng,
+    ring_r_word: :e1r_word,
+    ring_r_len: :e1r_len,
+    ring_r_pop: :e1r_pop,
     nm_q_name: :nm1_qn,
     nm_q_hit: :nm1_qh,
     nm_q_eng: :nm1_qe,

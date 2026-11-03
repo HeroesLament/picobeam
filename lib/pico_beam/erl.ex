@@ -2280,6 +2280,16 @@ defmodule PicoBEAM.Erl do
     finish({rx, emit(st, {:out, rx})}, mode)
   end
 
+  # `erlang:host/0` — the pid of the host on ring node 15 (`RingHost`):
+  # engine 15, slot 0, serial 0. A send to it leaves through the
+  # remote-send path like any other engine's pid, and the board-side
+  # driver answers as that pid.
+  defp builtin(:host, [], st, mode, _node) do
+    {r, st} = new_reg(st)
+    st = emit(st, {:ldc, r, {:raw, PicoBEAM.Term.pid(15, 0, 0)}})
+    finish({r, st}, mode)
+  end
+
   defp builtin(:halt, [], st, mode, _node) do
     st = emit(st, {:halt})
     finish(load_literal(:ok, st), mode)

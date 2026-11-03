@@ -99,6 +99,10 @@ defmodule PicoBEAM.Machine do
   @default_swap_cost 32
 
   defstruct code: %{},
+            # ring node 15 (`RingHost`): what the program sent to the host,
+            # oldest first, as {dest pid, payload}. Nothing answers here; a
+            # host emulator reads this and injects replies.
+            host_out: [],
             engines: {},
             n_engines: 1,
             t_contexts: 4,
@@ -574,6 +578,9 @@ defmodule PicoBEAM.Machine do
 
       {:ldn, rd} ->
         {m, p, put.(ctx, rd, Term.nil_term())}
+
+      {:ldc, rd, {:raw, w}} ->
+        {m, p, put.(ctx, rd, w)}
 
       {:ldc, rd, v} when is_integer(v) ->
         case Term.int_checked(v) do
@@ -1698,6 +1705,15 @@ defmodule PicoBEAM.Machine do
 
   defp deliver(entry, m) do
     eid = Term.pid_engine(entry.dest)
+
+    if eid == 15 do
+      %{m | host_out: m.host_out ++ [{entry.dest, entry.payload}]}
+    else
+      deliver_engine(entry, m, eid)
+    end
+  end
+
+  defp deliver_engine(entry, m, eid) do
     slot = Term.pid_slot(entry.dest)
     e = elem(m.engines, eid)
 

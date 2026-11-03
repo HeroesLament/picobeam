@@ -64,6 +64,14 @@ defmodule PicoBEAM.RTL.Ulx3sM5Top do
     phase_step: 0
 
   instance :core, PicoBEAM.RTL.M5Core,
+    # no host port on this top (`RingHost`'s host-in / host-out)
+    hin_en: 0,
+    hin_head: 0,
+    hin_kind: 0,
+    hin_deng: 0,
+    hin_word: 0,
+    hin_len: 0,
+    hout_pop: 0,
     clk_12: :clk_12,
     rst: :core_rst,
     btn2: :btn2,

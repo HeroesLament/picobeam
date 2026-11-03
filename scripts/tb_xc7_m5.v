@@ -9,6 +9,10 @@
 //    engine 0's first `out` is the push image's 0xAB
 // 3. the same run again, with the pb_clk period changed: the signature
 //    must not move. That is the property the Fmax sweep stands on.
+// -DHOST (with +IMG=host_echo_bytes.hex +LEN=<bytes>): instead of 2-4,
+//    the host port. host_echo's engine 0 sends its own pid to ring node
+//    15; the bench pops it, pushes 41 and 99 to that pid, and expects 42
+//    and 100 back. Prints __XC7_HOST_OK__.
 // 4. run control: window 0 runs until stopped (done never sets), the
 //    CTRL1[5]/STATUS3[29] snapshot reads the running machine twice with
 //    the cycle count moving past the old window, and a stopped machine
@@ -157,6 +161,72 @@ module tb;
 
   reg [31:0] c1, c2, c3;
 
+  // ---- host port helpers (CTRL1 bit 6 / STATUS3 bit 27: pop; CTRL2 ops
+  // 1..3 / STATUS3 bit 28: push). `ctl1` shadows CTRL1 so a pop toggle
+  // keeps the run bit.
+  reg [31:0] ctl1 = 0;
+  reg hin_par = 0, hout_par = 0;
+  reg hv, hh; reg [3:0] hk, hd; reg [6:0] hl; reg [35:0] hw;
+
+  task hpop;
+    integer k;
+    begin
+      hout_par = ~hout_par;
+      ctl1 = (ctl1 & ~32'h40) | (hout_par << 6);
+      axw(32'h10, ctl1);
+      axr(32'h28, rd);
+      for (k = 0; k < 1000 && rd[27] !== hout_par; k = k + 1) axr(32'h28, rd);
+      check(rd[27] === hout_par, "host-out pop acknowledged");
+      axr(32'h10030, rd);
+      hv = rd[31]; hh = rd[30]; hk = rd[29:26]; hd = rd[25:22]; hl = rd[21:15];
+      hw[35:32] = rd[3:0];
+      axr(32'h10034, rd);
+      hw[31:0] = rd;
+    end
+  endtask
+
+  // poll host-out until a flit arrives (or give up)
+  task hwait(input [255:0] what);
+    integer t;
+    begin
+      hv = 0;
+      for (t = 0; t < 400 && !hv; t = t + 1) begin
+        hpop;
+        if (!hv) repeat (200) @(posedge fclk);
+      end
+      check(hv === 1'b1, what);
+    end
+  endtask
+
+  task hpush(input h, input [3:0] kd, input [3:0] dg, input [6:0] ln, input [35:0] w);
+    integer k;
+    begin
+      axw(32'h14, (32'd1 << 30) | w[23:0]);
+      axw(32'h14, (32'd2 << 30) | (ln << 12) | w[35:24]);
+      hin_par = ~hin_par;
+      axw(32'h14, (32'd3 << 30) | (dg << 5) | (kd << 1) | h);
+      axr(32'h28, rd);
+      for (k = 0; k < 1000 && rd[28] !== hin_par; k = k + 1) axr(32'h28, rd);
+      check(rd[28] === hin_par, "host-in push acknowledged");
+    end
+  endtask
+
+  reg [35:0] epid;
+
+  // one round trip: push n to `epid`, expect n + 1 back from it
+  task hround(input [35:0] n);
+    begin
+      hpush(1'b1, 4'd0, epid[31:28], 7'd1, epid);
+      hpush(1'b0, 4'd0, 4'd0, 7'd0, n);
+      hwait("the reply head arrived");
+      $display("  reply head: head=%0b kind=%0d deng=%0d len=%0d word=%09h", hh, hk, hd, hl, hw);
+      check(hh == 1 && hd == 15 && hl == 1 && hw == 36'h5F0000000, "reply head is for the host, one flit");
+      hpop;
+      $display("  reply flit: valid=%0b word=%09h", hv, hw);
+      check(hv == 1 && hh == 0 && hw == n + 1, "the reply is n + 1");
+    end
+  endtask
+
   initial begin
     for (i = 0; i < 2048; i = i + 1) pimg[i] = 8'h00;
     if (!$value$plusargs("IMG=%s", pimg_path)) pimg_path = `PUSH_IMG;
@@ -166,7 +236,7 @@ module tb;
     repeat (8) @(posedge fclk);
 
     axr(32'h24, rd);
-    check(rd == 32'h0B5E0007, "design id");
+    check(rd == 32'h0B5E0008, "design id");
 
     // hold the core, release the MMCM, wait for lock
     axw(32'h10, 32'h0000_0002);
@@ -189,6 +259,30 @@ module tb;
     for (i = 0; i < plen; i = i + 1) axw(32'h14, (i & 32'h7FF) | (pimg[i] << 16));
     if (!$value$plusargs("WIN=%d", win)) win = `WIN;
     axw(32'h18, (win << 16) | plen);
+
+`ifdef HOST
+    $display("run H: host port, host_echo");
+    axw(32'h18, plen);                      // window 0: run until stopped
+    axw(32'h10, 32'h0000_0002);             // hold
+    repeat (40) @(posedge fclk);
+    ctl1 = 32'h0000_0004;
+    axw(32'h10, ctl1);                      // release + run
+    hwait("the hello arrived");
+    $display("  hello head: head=%0b kind=%0d deng=%0d len=%0d word=%09h", hh, hk, hd, hl, hw);
+    check(hh == 1 && hk == 0 && hd == 15 && hl == 1 && hw == 36'h5F0000000,
+          "a kind-0 head for the host pid, one flit");
+    hpop;
+    epid = hw;
+    $display("  hello flit: valid=%0b word=%09h (engine 0's pid)", hv, hw);
+    check(hv == 1 && hh == 0 && hw[35:32] == 4'd5 && hw[31:28] == 4'd0, "the flit is a pid on engine 0");
+    hround(36'd41);
+    hround(36'd99);
+    hpop;
+    check(hv == 1'b0, "nothing else came out");
+    if (errors == 0) $display("__XC7_HOST_OK__");
+    else $display("__XC7_HOST_FAILED__ (%0d)", errors);
+    $finish;
+`endif
 
     $display("run 1: pb_clk 20 ns");
     run_once(sig1, cyc1);
