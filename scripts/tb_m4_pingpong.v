@@ -32,7 +32,34 @@ module tb;
   wire [1:0] dbg_x_seat; wire dbg_x_en; wire [8:0] dbg_pc;
   wire [4:0] dbg_st0, dbg_st1, dbg_st2, dbg_st3;
 
+  // notes/53: the registry is a NODE unit now — the single-engine
+  // harness supplies one, interface A wired, interface B tied off
+  // (tb_fixed's setup; without it the engine's nm_* inputs float and
+  // the send path reads X)
+  wire [15:0] nm_qn;
+  wire nm_qh; wire [3:0] nm_qe; wire [4:0] nm_qs; wire [21:0] nm_qr;
+  wire [3:0] nm_we; wire [4:0] nm_ws; wire [21:0] nm_wr;
+  wire nm_wen, nm_tk, nm_pt, nm_fl, nm_clr, nm_die;
+  wire [35:0] nm_dpid;
+  wire [4:0] nm_ps;
+
+  name_table names(.clk(clk), .rst(rst),
+    .q_name(nm_qn), .q_hit(nm_qh), .q_eng(nm_qe), .q_slot(nm_qs), .q_serial(nm_qr),
+    .w_name(nm_qn), .w_eng(nm_we), .w_slot(nm_ws), .w_serial(nm_wr), .w_en(nm_wen),
+    .name_taken(nm_tk), .pid_taken(nm_pt), .table_full(nm_fl),
+    .clr_en(nm_clr), .clr_name(nm_qn),
+    .die_en(nm_die), .die_eng(4'd0), .die_slot(nm_dpid[26:22]), .die_serial(nm_dpid[21:0]),
+    .q2_name(16'd0), .w2_name(16'd0), .w2_eng(4'd0), .w2_slot(5'd0),
+    .w2_serial(22'd0), .w2_en(1'b0), .clr2_en(1'b0), .clr2_name(16'd0),
+    .die2_en(1'b0), .die2_eng(4'd0), .die2_slot(5'd0), .die2_serial(22'd0));
+
   barrel_engine eng(.clk(clk), .rst(rst),
+    .nm_q_name(nm_qn), .nm_q_hit(nm_qh), .nm_q_eng(nm_qe), .nm_q_slot(nm_qs),
+    .nm_q_serial(nm_qr), .nm_name_taken(nm_tk), .nm_pid_taken(nm_pt), .nm_full(nm_fl),
+    .nm_w_en(nm_wen), .nm_w_eng(nm_we), .nm_w_slot(nm_ws), .nm_w_serial(nm_wr),
+    .nm_clr_en(nm_clr), .nm_die(nm_die), .nm_die_pid(nm_dpid),
+    .nm_probe_slot(nm_ps), .nm_probe_state(2'd0), .nm_probe_serial(22'd0),
+    .peer_probe_slot(5'd0),
     // notes/33: one engine here, so the VM-wide halt has nobody to tell
     .halt_in(1'b0), .halt_req(),
     .eng_id(4'd0),
@@ -42,6 +69,7 @@ module tb;
     .ring_r_deng(4'd0), .ring_r_word(36'd0),
     .ring_r_len(7'd0), .ring_r_pop(),
     .ld_code_en(ld_en), .ld_code_addr(ld_addr), .ld_code_data(ld_data),
+    .ld_pool_en(1'b0), .ld_pool_addr(8'd0), .ld_pool_data(36'd0),
     .boot_en(boot_en), .boot_pc(boot_pc),
     .out_valid(out_valid), .out_data(out_data),
     .idle(idle), .faulted(faulted), .fault_reason(fault_reason),
@@ -96,6 +124,9 @@ module tb;
 
     for (i = 0; i < 2048; i = i + 1) begin
       eng.mbox_words[i] = 0; eng.mbox_hv[i] = 0;
+    end
+    for (i = 0; i < 256; i = i + 1) begin
+      eng.hp_h0[i] = 0; eng.hp_h1[i] = 0;
     end
     for (i = 0; i < 32; i = i + 1) begin
       eng.mbox_heads[i]=0; eng.mbox_tails[i]=0; eng.mbox_cnts[i]=0; eng.mbox_curs[i]=0;
