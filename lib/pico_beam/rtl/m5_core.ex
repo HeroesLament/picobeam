@@ -96,6 +96,19 @@ defmodule PicoBEAM.RTL.M5Core do
   output :led, 8
   output :ftdi_rxd, 1
 
+  # Observation taps for a harness that is not a person at a terminal: the
+  # two engines' `out` strobes and words, their fetch PCs, and
+  # {vm_halt, fault_any, idle_both, from_uart}. Board tops leave them
+  # unconnected and synthesis drops them; `Xc7M5Top` folds them into a
+  # per-cycle signature, which is what makes a timing failure visible.
+  output :obs_ov0, 1
+  output :obs_od0, 36
+  output :obs_ov1, 1
+  output :obs_od1, 36
+  output :obs_pc0, 9
+  output :obs_pc1, 9
+  output :obs_flags, 4
+
   # ---- the loader
   wire :sd_busy, 1
   wire :sd_done, 1
@@ -341,6 +354,14 @@ defmodule PicoBEAM.RTL.M5Core do
     deaths_both = dt0 + dt1
     fcnt_both = fc0 + fc1
     wr_nib = sd_wbusy * 8 + wrote_r * 4 + sd_werr * 2 + from_uart
+
+    obs_ov0 = ov0
+    obs_od0 = od0
+    obs_ov1 = ov1
+    obs_od1 = od1
+    obs_pc0 = pc0
+    obs_pc1 = pc1
+    obs_flags = vm_halt * 8 + fault_any * 4 + idle_both * 2 + from_uart
   end
 
   on :clk_12 do
