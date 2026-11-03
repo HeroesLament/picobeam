@@ -292,6 +292,22 @@ defmodule PicoBEAM.RTL.Ulx3sM3Top do
     phase_step: 0
 
   instance :engine, PicoBEAM.RTL.BarrelEngine,
+    # one engine, no ring, no literal-pool loader on this top. These
+    # inputs arrived after M3 (the ring in notes/49, the pool later) and
+    # were left unbound: the emitter declares the nets and drives
+    # nothing, so they simulated as X. Tied off the way the
+    # single-engine benches tie them.
+    eng_id: 0,
+    ring_r_valid: 0,
+    ring_r_head: 0,
+    ring_r_kind: 0,
+    ring_r_deng: 0,
+    ring_r_word: 0,
+    ring_r_len: 0,
+    ring_w_ready: 1,
+    ld_pool_en: 0,
+    ld_pool_addr: 0,
+    ld_pool_data: 0,
     # `notes/53`: no node registry on this top — names are not part of
     # its programs, and tied-off inputs keep the flattened nets driven
     nm_q_hit: 0,
