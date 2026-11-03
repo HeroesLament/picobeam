@@ -258,6 +258,13 @@ defmodule PicoBEAM.Term do
     make(:pid, engine <<< 28 ||| slot <<< 22 ||| serial)
   end
 
+  @doc """
+  The shell's pid on the host (ring node 15, slot 1, serial 1): what
+  `erlang:group_leader/0` returns on the machine, and the pid
+  `FabFarm.PbShell` sends and answers as.
+  """
+  def shell_pid, do: pid(15, 1, 1)
+
   def pid_engine(word), do: payload(word) >>> 28 &&& 0xF
   def pid_slot(word), do: payload(word) >>> 22 &&& 0x3F
   def pid_serial(word), do: payload(word) &&& 0x3FFFFF

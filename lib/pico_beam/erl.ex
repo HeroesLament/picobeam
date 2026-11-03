@@ -145,7 +145,19 @@ defmodule PicoBEAM.Erl do
            map_put/3, map_update/3, map_new/0, map_keys/1, map_values/1,
            map_from_list/1,
            bin_at/2, bin_size/1, bin_concat/2, bin_to_list/1, list_to_bin/1,
-           bin_eq/2, bin_copy/4, bin_from/2]).
+           bin_eq/2, bin_copy/4, bin_from/2,
+           io_puts/1, io_inspect/1]).
+
+  %% IO, for the shell (`remote: true` turns `IO.puts/1` and
+  %% `IO.inspect/1` into these): the term goes to the group leader, the
+  %% shell's pid on the host, as `{pb_io, Kind, From, term, X}`. Terms
+  %% only: a binary cannot cross the wire (`Serial` walks tuples and
+  %% conses), and converting one costs more code memory than a shell can
+  %% spare (a string `IO.puts` was 122 bundles of 512).
+  io_out(K, X) ->
+      erlang:group_leader() ! {pb_io, K, self(), term, X}, ok.
+  io_puts(X) -> io_out(puts, X).
+  io_inspect(X) -> io_out(inspect, X), X.
 
   reverse(L) -> reverse(L, []).
   reverse([], A) -> A;
@@ -1183,6 +1195,10 @@ defmodule PicoBEAM.Erl do
 
       mod == :binary and is_map_key(@binary_prelude, {f, length(args)}) ->
         prelude_call(Map.fetch!(@binary_prelude, {f, length(args)}), args, st, mode)
+
+      # the shell's IO: through the prelude to the group leader
+      st.remote and mod == IO and f in [:puts, :inspect] and length(args) == 1 ->
+        prelude_call(:"io_#{f}", args, st, mode)
 
       st.remote and not in_prelude?(st) -> remote_call(mod, f, args, st, mode)
 
@@ -2351,6 +2367,16 @@ defmodule PicoBEAM.Erl do
   defp builtin(:host, [], st, mode, _node) do
     {r, st} = new_reg(st)
     st = emit(st, {:ldc, r, {:raw, PicoBEAM.Term.pid(15, 0, 0)}})
+    finish({r, st}, mode)
+  end
+
+  # `erlang:group_leader/0` — there is one, machine-wide: the shell on
+  # the host (`PicoBEAM.Term.shell_pid/0`, ring node 15). Not per process
+  # and not settable; it is the pid the shell answers as, so every
+  # process's IO lands in the shell.
+  defp builtin(:group_leader, [], st, mode, _node) do
+    {r, st} = new_reg(st)
+    st = emit(st, {:ldc, r, {:raw, PicoBEAM.Term.shell_pid()}})
     finish({r, st}, mode)
   end
 
