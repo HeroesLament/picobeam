@@ -21,14 +21,11 @@
 `timescale 1ns/1ps
 
 module tb;
+  // every declaration ahead of every use (newer iverilog rejects use-before-declaration)
   reg clk = 0, rst = 1;
-  always #5 clk = ~clk;
-
-  // ---- BarrelSeq ----
   reg seat_wr = 0; reg [1:0] seat_idx = 0; reg [8:0] seat_pc = 0;
   reg is_jump = 0, is_call = 0, is_ret = 0, is_halt = 0, fault_in = 0, has_wb2 = 0;
   reg [8:0] pc_target = 0;
-
   wire [1:0] f_seat, d_seat, x_seat, commit_seat, fill_seat, died_seat;
   wire f_en, d_en, x_en, call_commit, pop_en, fill_en, dest_wr, wb2_en, died, died_fault;
   wire [8:0] f_pc, x_pc, link_pc;
@@ -37,6 +34,36 @@ module tb;
   wire drain_ready, drain_done;
   wire [1:0] drain_done_seat;
   wire [8:0] ret_pc_out;
+  reg [3:0] rd_addr0 = 0;
+  reg w_en0 = 0, w_stg0 = 0;
+  reg [3:0] w_addr0 = 0;
+  reg [35:0] w_data0 = 0;
+  wire [35:0] rd_data0;
+  wire spill_valid; wire [3:0] spill_idx; wire [35:0] spill_data; wire [1:0] spill_seat;
+  wire [35:0] fill_data;
+  wire [3:0] ret_dest_out, depth_out;
+  wire overflow, underflow;
+  reg [3:0] call_dest = 0;
+  reg fillw_en = 0;
+  reg [3:0] fillw_idx = 0;
+  reg [1:0] fillw_seat = 0;
+  reg [35:0] ret_val = 0;
+  wire [1:0] w_ctx_sel;
+  wire w_en0_all;
+  wire w_stg0_all;
+  wire [3:0] w_addr0_all;
+  wire [35:0] w_data0_all;
+  reg [8:0] d_pc = 0;
+  reg d_live = 0;
+  integer errors = 0;
+  integer saw_arg = 0, saw_r1 = 0, saw_r2 = 0, saw_r5 = 0, saw_ctx1 = 0;
+  reg [1:0] died_seat_l = 0;
+  reg died_fault_l = 0;
+  integer i;
+  always #5 clk = ~clk;
+
+  // ---- BarrelSeq ----
+
 
   barrel_seq bs(.clk(clk), .rst(rst), .gc_park(1'b0), .gc_res4(4'b0),
     // Phase 4/entry 38 grew the seq new inputs; this test predates them
@@ -71,12 +98,6 @@ module tb;
     .dbg_st0(dbg_st0), .dbg_st1(dbg_st1), .dbg_st2(dbg_st2), .dbg_st3(dbg_st3));
 
   // ---- window ----
-  reg [3:0] rd_addr0 = 0;
-  reg w_en0 = 0, w_stg0 = 0;
-  reg [3:0] w_addr0 = 0;
-  reg [35:0] w_data0 = 0;
-  wire [35:0] rd_data0;
-  wire spill_valid; wire [3:0] spill_idx; wire [35:0] spill_data; wire [1:0] spill_seat;
 
   reg_window_ctx w(.clk(clk), .rst(rst), .rd_stg0(1'b0),
     .rd_ctx(d_seat), .rd_addr0(rd_addr0), .rd_addr1(4'd0), .rd_addr2(4'd0),
@@ -93,10 +114,6 @@ module tb;
     .spill_idx(spill_idx), .spill_data(spill_data), .spill_seat(spill_seat));
 
   // ---- frames (seat->slot identity) ----
-  wire [35:0] fill_data;
-  wire [3:0] ret_dest_out, depth_out;
-  wire overflow, underflow;
-  reg [3:0] call_dest = 0;
 
   frame_ram_proc fr(.clk(clk), .rst(rst),
     // notes/40: the collector's addressed port. Tied off here — these
@@ -118,10 +135,6 @@ module tb;
   // ---- engine glue: the fill write trails the read by one cycle ----
   // (this is M2's fillw_en/fillw_idx delay pair; the sync read lands the
   //  word exactly on the owner's X slot, where port 0 is free)
-  reg fillw_en = 0;
-  reg [3:0] fillw_idx = 0;
-  reg [1:0] fillw_seat = 0;
-  reg [35:0] ret_val = 0;
   always @(posedge clk) begin
     fillw_en <= fill_en;
     fillw_idx <= fill_idx;
@@ -130,15 +143,13 @@ module tb;
 
   // port 0 arbitration by phase (never contended: a filling context is
   // parked, so its X slots carry no bundle)
-  wire [1:0] w_ctx_sel   = fillw_en ? fillw_seat : (dest_wr ? fill_seat : x_seat);
-  wire w_en0_all         = fillw_en | dest_wr | w_en0;
-  wire w_stg0_all        = (fillw_en | dest_wr) ? 1'b0 : w_stg0;
-  wire [3:0] w_addr0_all = fillw_en ? fillw_idx : (dest_wr ? ret_dest_out : w_addr0);
-  wire [35:0] w_data0_all= fillw_en ? fill_data : (dest_wr ? ret_val : w_data0);
+  assign w_ctx_sel = fillw_en ? fillw_seat : (dest_wr ? fill_seat : x_seat);
+  assign w_en0_all = fillw_en | dest_wr | w_en0;
+  assign w_stg0_all = (fillw_en | dest_wr) ? 1'b0 : w_stg0;
+  assign w_addr0_all = fillw_en ? fillw_idx : (dest_wr ? ret_dest_out : w_addr0);
+  assign w_data0_all = fillw_en ? fill_data : (dest_wr ? ret_val : w_data0);
 
   // ---- the program: F->D pc register, classification at X ----
-  reg [8:0] d_pc = 0;
-  reg d_live = 0;
   always @(posedge clk) begin
     d_pc <= f_pc;
     d_live <= f_en;
@@ -175,11 +186,7 @@ module tb;
   end
 
   // X stage: writes + checks
-  integer errors = 0;
-  integer saw_arg = 0, saw_r1 = 0, saw_r2 = 0, saw_r5 = 0, saw_ctx1 = 0;
   // died_* are combinational (they track the X seat), so latch them
-  reg [1:0] died_seat_l = 0;
-  reg died_fault_l = 0;
   always @(posedge clk) if (died) begin
     died_seat_l <= died_seat; died_fault_l <= died_fault;
   end
@@ -227,7 +234,6 @@ module tb;
     if (underflow) check(0, "unexpected underflow");
   end
 
-  integer i;
   initial begin
     for (i = 0; i < 8192; i = i + 1) fr.frames[i] = 0;
     for (i = 0; i < 512; i = i + 1) fr.rets[i] = 0;

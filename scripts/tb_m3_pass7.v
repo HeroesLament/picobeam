@@ -24,13 +24,10 @@
 `timescale 1ns/1ps
 
 module tb;
+  // every declaration ahead of every use (newer iverilog rejects use-before-declaration)
   reg clk = 0, rst = 1;
-  always #5 clk = ~clk;
   reg boot = 1;
-
   localparam N_SPAWN = 8;
-
-  // ---- BarrelSeq ----
   reg is_jump = 0, is_halt = 0, is_spawn = 0;
   reg [8:0] pc_target = 0;
   wire [1:0] f_seat, d_seat, x_seat, commit_seat, fill_seat, died_seat, spawn_seat;
@@ -41,6 +38,50 @@ module tb;
   wire [4:0] dbg_st0, dbg_st1, dbg_st2, dbg_st3;
   wire seat_wr, seat_clr; wire [1:0] seat_idx; wire [8:0] seat_pc;
   wire spawn_ready, spawn_full;
+  reg [3:0] rdl [0:3];
+  wire [3:0] spawn_rd_now;
+  wire [2:0] su_cmd; wire [4:0] su_slot; wire [8:0] su_pc;
+  wire su_rq_push, su_rq_pop; wire [4:0] su_rq_data;
+  wire op_swap, op_spawn; wire [1:0] swap_ctx, sp_ctx;
+  wire sfill_en; wire [3:0] sfill_idx; wire [1:0] sfill_seat; wire [35:0] sfill_data;
+  wire [4:0] slot0, slot1, slot2, slot3, x_slot, pt_rd_slot;
+  wire [21:0] x_serial; wire [35:0] self_pid;
+  wire pid_wr; wire [1:0] pid_seat; wire [3:0] pid_reg; wire [35:0] pid_data;
+  wire [2:0] su_st; wire [7:0] su_swaps;
+  wire su_rst;
+  reg [2:0] tb_cmd = 0; reg [8:0] tb_pc = 0;
+  wire [2:0] pt_cmd;
+  wire [4:0] pt_slot;
+  wire [8:0] pt_pc;
+  wire alloc_ok; wire [4:0] alloc_slot; wire [21:0] alloc_serial;
+  wire [8:0] pt_rd_pc; wire [21:0] pt_rd_serial; wire [1:0] pt_rd_state; wire [5:0] occ;
+  reg tb_push = 0;
+  wire rq_push;
+  wire [4:0] rq_data;
+  wire rq_pop;
+  wire [4:0] rq_head; wire rq_empty, rq_full; wire [5:0] rq_count;
+  reg [3:0] rd_addr0 = 0;
+  reg w_en0_p = 0, w_stg0_p = 0; reg [3:0] w_addr0_p = 0; reg [35:0] w_data0_p = 0;
+  wire [35:0] rd_data0;
+  wire drain_ready, drain_done; wire [1:0] drain_done_seat, spill_seat;
+  wire spill_valid; wire [3:0] spill_idx; wire [35:0] spill_data;
+  reg sfw_en = 0; reg [3:0] sfw_idx = 0; reg [1:0] sfw_seat = 0;
+  wire [1:0] w_ctx_sel;
+  wire w_en0_all;
+  wire w_stg0_all;
+  wire [3:0] w_addr0_all;
+  wire [35:0] w_data0_all;
+  reg [8:0] d_pc = 0;
+  integer spawned = 0;
+  integer errors = 0, i;
+  reg [35:0] exp_pid [0:31];
+  reg [35:0] exp_arg [0:31];
+  integer arg_ok = 0, pid_ok = 0, kids_done = 0, root_self_ok = 0;
+  reg [35:0] last_pid = 0;
+  always #5 clk = ~clk;
+
+
+  // ---- BarrelSeq ----
 
   barrel_seq bs(.clk(clk), .rst(rst), .gc_park(1'b0), .gc_res4(4'b0),
     // Phase 4/entry 38 grew the seq new inputs; this test predates them
@@ -77,20 +118,11 @@ module tb;
     .dbg_st0(dbg_st0), .dbg_st1(dbg_st1), .dbg_st2(dbg_st2), .dbg_st3(dbg_st3));
 
   // engine glue: the spawn's rd register, latched per seat at X
-  reg [3:0] rdl [0:3];
   always @(posedge clk) if (x_en && is_spawn) rdl[x_seat] <= 4'd2;
-  wire [3:0] spawn_rd_now = rdl[f_seat];
+  assign spawn_rd_now = rdl[f_seat];
 
   // ---- SeatUnit ----
-  wire [2:0] su_cmd; wire [4:0] su_slot; wire [8:0] su_pc;
-  wire su_rq_push, su_rq_pop; wire [4:0] su_rq_data;
-  wire op_swap, op_spawn; wire [1:0] swap_ctx, sp_ctx;
-  wire sfill_en; wire [3:0] sfill_idx; wire [1:0] sfill_seat; wire [35:0] sfill_data;
-  wire [4:0] slot0, slot1, slot2, slot3, x_slot, pt_rd_slot;
-  wire [21:0] x_serial; wire [35:0] self_pid;
-  wire pid_wr; wire [1:0] pid_seat; wire [3:0] pid_reg; wire [35:0] pid_data;
-  wire [2:0] su_st; wire [7:0] su_swaps;
-  wire su_rst = rst | boot;
+  assign su_rst = rst | boot;
 
   // the remote-creation port (`notes/49`): no ring here, so it is tied
   // off. An unconnected input floats to x and takes every branch that
@@ -120,45 +152,34 @@ module tb;
     .dbg_st(su_st), .dbg_swaps(su_swaps));
 
   // ---- ProcTable / RunQueue ----
-  reg [2:0] tb_cmd = 0; reg [8:0] tb_pc = 0;
-  wire [2:0] pt_cmd  = boot ? tb_cmd : su_cmd;
-  wire [4:0] pt_slot = boot ? 5'd0   : su_slot;
-  wire [8:0] pt_pc   = boot ? tb_pc  : su_pc;
-  wire alloc_ok; wire [4:0] alloc_slot; wire [21:0] alloc_serial;
-  wire [8:0] pt_rd_pc; wire [21:0] pt_rd_serial; wire [1:0] pt_rd_state; wire [5:0] occ;
+  assign pt_cmd = boot ? tb_cmd : su_cmd;
+  assign pt_slot = boot ? 5'd0   : su_slot;
+  assign pt_pc = boot ? tb_pc  : su_pc;
 
   proc_table pt(.clk(clk), .rst(rst), .cmd(pt_cmd), .cmd_slot(pt_slot), .cmd_pc(pt_pc),
     .alloc_ok(alloc_ok), .alloc_slot(alloc_slot), .alloc_serial(alloc_serial),
     .rd_slot(pt_rd_slot), .rd_pc(pt_rd_pc), .rd_serial(pt_rd_serial),
     .rd_state(pt_rd_state), .occ(occ));
 
-  reg tb_push = 0;
-  wire rq_push       = boot ? tb_push   : su_rq_push;
-  wire [4:0] rq_data = boot ? alloc_slot: su_rq_data;
-  wire rq_pop        = boot ? 1'b0      : su_rq_pop;
-  wire [4:0] rq_head; wire rq_empty, rq_full; wire [5:0] rq_count;
+  assign rq_push = boot ? tb_push   : su_rq_push;
+  assign rq_data = boot ? alloc_slot: su_rq_data;
+  assign rq_pop = boot ? 1'b0      : su_rq_pop;
 
   run_queue rq(.clk(clk), .rst(rst), .push(rq_push), .push_data(rq_data),
     .pop(rq_pop), .q_head(rq_head), .empty(rq_empty), .full(rq_full), .count(rq_count));
 
   // ---- window ----
-  reg [3:0] rd_addr0 = 0;
-  reg w_en0_p = 0, w_stg0_p = 0; reg [3:0] w_addr0_p = 0; reg [35:0] w_data0_p = 0;
-  wire [35:0] rd_data0;
-  wire drain_ready, drain_done; wire [1:0] drain_done_seat, spill_seat;
-  wire spill_valid; wire [3:0] spill_idx; wire [35:0] spill_data;
 
-  reg sfw_en = 0; reg [3:0] sfw_idx = 0; reg [1:0] sfw_seat = 0;
   always @(posedge clk) begin
     sfw_en <= sfill_en; sfw_idx <= sfill_idx; sfw_seat <= sfill_seat;
   end
 
   // port 0: swap-in fill, then the spawn pid write-back, then the bundle
-  wire [1:0] w_ctx_sel    = sfw_en ? sfw_seat : (pid_wr ? pid_seat : x_seat);
-  wire w_en0_all          = sfw_en | pid_wr | w_en0_p;
-  wire w_stg0_all         = (sfw_en | pid_wr) ? 1'b0 : w_stg0_p;
-  wire [3:0] w_addr0_all  = sfw_en ? sfw_idx : (pid_wr ? pid_reg : w_addr0_p);
-  wire [35:0] w_data0_all = sfw_en ? sfill_data : (pid_wr ? pid_data : w_data0_p);
+  assign w_ctx_sel = sfw_en ? sfw_seat : (pid_wr ? pid_seat : x_seat);
+  assign w_en0_all = sfw_en | pid_wr | w_en0_p;
+  assign w_stg0_all = (sfw_en | pid_wr) ? 1'b0 : w_stg0_p;
+  assign w_addr0_all = sfw_en ? sfw_idx : (pid_wr ? pid_reg : w_addr0_p);
+  assign w_data0_all = sfw_en ? sfill_data : (pid_wr ? pid_data : w_data0_p);
 
   reg_window_ctx w(.clk(clk), .rst(rst), .rd_stg0(1'b0),
     .rd_ctx(d_seat), .rd_addr0(rd_addr0), .rd_addr1(4'd0), .rd_addr2(4'd0),
@@ -175,10 +196,8 @@ module tb;
     .spill_idx(spill_idx), .spill_data(spill_data), .spill_seat(spill_seat));
 
   // ---- the program ----
-  reg [8:0] d_pc = 0;
   always @(posedge clk) d_pc <= f_pc;
 
-  integer spawned = 0;
 
   always @(*) begin
     is_jump = 0; is_halt = 0; is_spawn = 0; pc_target = 0;
@@ -211,11 +230,6 @@ module tb;
   end
 
   // ---- monitors ----
-  integer errors = 0, i;
-  reg [35:0] exp_pid [0:31];
-  reg [35:0] exp_arg [0:31];
-  integer arg_ok = 0, pid_ok = 0, kids_done = 0, root_self_ok = 0;
-  reg [35:0] last_pid = 0;
 
   task check(input cond, input [255:0] name);
     if (!cond) begin

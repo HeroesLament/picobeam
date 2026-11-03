@@ -8,6 +8,8 @@
 `timescale 1ns/1ps
 
 module tb;
+  // declared before first use (newer iverilog rejects use-before-declaration)
+  wire mb_full, mb_busy, mb_done, mb_hit, mb_unseen;
   reg clk = 0, rst = 1;
   always #5 clk = ~clk;
 
@@ -63,7 +65,6 @@ module tb;
   // the engine's rule: enqueue wins the command port
   wire [2:0] mb_cmd   = (mb_cmd_s != 0) ? mb_cmd_s : rx_cmd;
   wire [4:0] mb_slot  = (mb_cmd_s != 0) ? mb_slot_s : rx_slot;
-  wire mb_full, mb_busy, mb_done, mb_hit, mb_unseen;
   wire [35:0] mb_hit_word;
   wire [5:0] mb_scan_len;
   wire [6:0] mb_count;

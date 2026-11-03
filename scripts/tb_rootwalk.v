@@ -19,6 +19,8 @@
 // the collector at all — the filter that makes the walk affordable.
 `timescale 1ns/1ps
 module tb_rootwalk;
+  // declared before first use (newer iverilog rejects use-before-declaration)
+  integer fails = 0;
   reg clk = 0, rst = 1, start = 0;
   always #5 clk = ~clk;
 
@@ -106,7 +108,6 @@ module tb_rootwalk;
     endcase
   end
 
-  integer fails = 0;
   integer i, s, d, c, g, r;
 
   // is location (region, ...) one the walker MUST visit?
