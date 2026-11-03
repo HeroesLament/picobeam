@@ -1474,6 +1474,9 @@ defmodule PicoBEAM.RTL.BarrelEngine do
   wire :wk_slot, 5, init: 0
   wire :pt_free, 1
   wire :pt_wake_go, 1
+  wire :su_ev_on, 1
+  wire :su_ev_slot, 5
+  wire :ev_hold, 1
   wire :rq_wake_go, 1
   wire :pt_doom_go, 1
 
@@ -2290,11 +2293,16 @@ defmodule PicoBEAM.RTL.BarrelEngine do
     # an exit message's is on rd3 (where the emitter put it), a ring
     # arrival's is on rd5 (where the incarnation check put it) — so this
     # cannot be one comparison against one port.
+    # ...and a target being EVICTED right now is neither: its seat is
+    # already cleared and its ProcTable state is not parked yet. It is
+    # queued like a parked one, and the wake waits for the park
+    # (`ev_hold` below) so the park cannot overwrite it.
     wake_queued =
+      bor(band(wake_en, band(su_ev_on, su_ev_slot == wake_slot)),
       bor(band(delivered, pt_rd2_state == 3),
         bor(band(sd_wake, pt_rd3_state == 3),
           bor(band(rg_last, pt_rd5_state == 3),
-            band(ser_wake, pt_rd6_state == 3))))
+            band(ser_wake, pt_rd6_state == 3)))))
 
     wk0 = band(wake_en_r, band(slot0 == wake_slot_r, dbg_st0 == 12))
     wk1 = band(wake_en_r, band(slot1 == wake_slot_r, dbg_st1 == 12))
@@ -3019,7 +3027,17 @@ defmodule PicoBEAM.RTL.BarrelEngine do
     # displacing a seat-unit command: a doom, then a wake
     pt_free = band(bnot(boot_en), su_cmd == 0)
     pt_doom_go = band(dm_pend, pt_free)
-    pt_wake_go = band(wk_pend, band(pt_free, bnot(pt_doom_go)))
+    # A wake is two halves, the ProcTable state and the run-queue push,
+    # and both go in the same cycle or neither does. They used to gate
+    # separately: with the ProcTable port busy and the queue free, the
+    # push fired every cycle the wake waited, queueing the process more
+    # than once. `ev_hold`: the target's eviction has not issued its park
+    # yet (a timeout for an evicted process waits the same way).
+    ev_hold = band(su_ev_on, su_ev_slot == wk_slot)
+    pt_wake_go =
+      band(wk_pend,
+        band(pt_free,
+          band(bnot(pt_doom_go), band(bnot(ev_hold), band(bnot(boot_en), bnot(su_rq_push))))))
     wk_cmd = wk_jump * 3 + bnot(wk_jump) * 8
     # `process_flag(trap_exit, _)` is a one-bit write that shares the
     # command port with everything else, so it queues like a doom does
@@ -3042,7 +3060,7 @@ defmodule PicoBEAM.RTL.BarrelEngine do
         band(pt_wake_go, wk_jump) * wk_pc
     # the woken process joins the run queue when the seat unit is not
     # pushing; its ProcTable state moves in the same deferred pass
-    rq_wake_go = band(wk_pend, band(bnot(boot_en), bnot(su_rq_push)))
+    rq_wake_go = pt_wake_go
     rq_push = bor(boot_en, bor(su_rq_push, rq_wake_go))
 
     rq_data =
@@ -4487,6 +4505,8 @@ defmodule PicoBEAM.RTL.BarrelEngine do
     gc_wr: :rk_sv_wr,
     gc_data: :rk_sv_data,
     gc_q: :sv_gc_q,
+    ev_on: :su_ev_on,
+    ev_slot: :su_ev_slot,
     seat_val: :seat_val,
     budget: :sched_budget,
     clk: :clk,

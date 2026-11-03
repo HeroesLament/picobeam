@@ -216,6 +216,15 @@ defmodule PicoBEAM.RTL.SeatUnit do
   input :gc_wr, 1
   input :gc_data, 36
   output :gc_q, 36
+  # an eviction in progress: from the cycle `start_save` clears the seat
+  # through the cycle the `park` goes to ProcTable, the process is
+  # neither seated-and-blocked (its context is 0) nor parked (its
+  # ProcTable state is still resident), so a wake for it matches
+  # neither of the engine's two paths. The engine treats a wake for
+  # `ev_slot` in this window as one for a parked process, and holds the
+  # ProcTable wake until the park has gone out.
+  output :ev_on, 1
+  output :ev_slot, 5
 
   # the save area: one EBR, {slot:5, reg:4}
   memory :save, width: 36, depth: 512, sync_read: :clk
@@ -465,6 +474,8 @@ defmodule PicoBEAM.RTL.SeatUnit do
         rsp_done * nb_slot
 
     dbg_st = st
+    ev_on = bor(band(st == 1, evicting), band(start_save, want_evict))
+    ev_slot = start_save * f_slot + bnot(start_save) * out_slot
     dbg_swaps = swaps
   end
 
