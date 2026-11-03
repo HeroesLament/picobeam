@@ -38,14 +38,14 @@ defmodule PicoBEAM.RTL.ImageParser do
   input :byte, 8
 
   output :code_en, 1
-  output :code_addr, 9
+  output :code_addr, 12
   output :code_data, 72
   output :pool_en, 1
   output :pool_addr, 8
   output :pool_data, 36
 
-  output :entry0, 9
-  output :entry1, 9
+  output :entry0, 12
+  output :entry1, 12
   # every bundle and pool word the header promised has been delivered
   output :complete, 1
   output :bad_magic, 1
@@ -70,14 +70,14 @@ defmodule PicoBEAM.RTL.ImageParser do
   # away — the synthesizer as accidental bounded model checker. notes/15.)
   wire :pidx, 4, init: 0
   wire :shreg, 72, init: 0
-  wire :bc, 10, init: 0
+  wire :bc, 13, init: 0
   wire :pc, 9, init: 0
   wire :e0, 16, init: 0
   wire :e1, 16, init: 0
-  wire :iidx, 10, init: 0
+  wire :iidx, 13, init: 0
 
   wire :ce_r, 1, init: 0
-  wire :ca_r, 9, init: 0
+  wire :ca_r, 12, init: 0
   wire :cd_r, 72, init: 0
   wire :pe_r, 1, init: 0
   wire :pa_r, 8, init: 0
@@ -97,8 +97,8 @@ defmodule PicoBEAM.RTL.ImageParser do
     pool_en = pe_r
     pool_addr = pa_r
     pool_data = pd_r
-    entry0 = e0[8..0]
-    entry1 = e1[8..0]
+    entry0 = e0[11..0]
+    entry1 = e1[11..0]
     complete = pstate == 4
     receiving = pstate != 0
     store_en = store_r
@@ -177,7 +177,7 @@ defmodule PicoBEAM.RTL.ImageParser do
             if pstate == 2 do
               if pidx == 8 do
                 ce_r = 1
-                ca_r = iidx[8..0]
+                ca_r = iidx[11..0]
                 cd_r = bor(shreg <<< 8, byte)
                 shreg = 0
                 pidx = 0

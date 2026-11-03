@@ -25,16 +25,16 @@ defmodule PicoBEAM.RTL.Duo do
 
   # one image, both engines
   input :ld_code_en, 1
-  input :ld_code_addr, 9
+  input :ld_code_addr, 12
   input :ld_code_data, 72
   input :ld_pool_en, 1
   input :ld_pool_addr, 8
   input :ld_pool_data, 36
 
   input :boot0, 1
-  input :boot_pc0, 9
+  input :boot_pc0, 12
   input :boot1, 1
-  input :boot_pc1, 9
+  input :boot_pc1, 12
 
   output :ov0, 1
   output :od0, 36

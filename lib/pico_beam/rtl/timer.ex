@@ -58,7 +58,7 @@ defmodule PicoBEAM.RTL.Timer do
   input :arm_en, 1
   input :arm_slot, 5
   input :arm_delay, 32
-  input :arm_pc, 9
+  input :arm_pc, 12
 
   # the message came first
   input :cancel_en, 1
@@ -66,21 +66,21 @@ defmodule PicoBEAM.RTL.Timer do
 
   output :fire_en, 1
   output :fire_slot, 5
-  output :fire_pc, 9
+  output :fire_pc, 12
   input :fire_ready, 1
 
   output :now, 32
   output :armed, 32
 
   memory :deadlines, width: 32, depth: 32
-  memory :tpcs, width: 9, depth: 32
+  memory :tpcs, width: 12, depth: 32
 
   wire :cyc, 32, init: 0
   wire :tval, 32, init: 0
   wire :sweep, 5, init: 0
   wire :r_fire, 1, init: 0
   wire :r_slot, 5, init: 0
-  wire :r_pc, 9, init: 0
+  wire :r_pc, 12, init: 0
 
   wire :expired, 1
   wire :is_armed, 1

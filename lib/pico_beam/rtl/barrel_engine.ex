@@ -117,7 +117,7 @@ defmodule PicoBEAM.RTL.BarrelEngine do
 
   # image loader side-door (SdBoot / a ROM streamer)
   input :ld_code_en, 1
-  input :ld_code_addr, 9
+  input :ld_code_addr, 12
   input :ld_code_data, 72
 
   # the literal pool's loader side-door, alongside the code store's
@@ -127,7 +127,7 @@ defmodule PicoBEAM.RTL.BarrelEngine do
 
   # create the first process: allocate at boot_pc and enqueue it
   input :boot_en, 1
-  input :boot_pc, 9
+  input :boot_pc, 12
 
   # the observability port
   output :out_valid, 1
@@ -202,19 +202,19 @@ defmodule PicoBEAM.RTL.BarrelEngine do
   # ---- pipeline / sequencer
   wire :f_seat, 2
   wire :f_en, 1
-  wire :f_pc, 9
-  wire :f_tgt, 9
+  wire :f_pc, 12
+  wire :f_tgt, 12
   wire :d_seat, 2
   wire :d_en, 1
   wire :x_seat, 2
   wire :x_en, 1
-  wire :x_pc, 9
+  wire :x_pc, 12
   wire :cm_bundle, 72
   wire :xb, 72, init: 0
 
   wire :call_commit, 1
   wire :commit_seat, 2
-  wire :link_pc, 9
+  wire :link_pc, 12
   wire :pop_en, 1
   wire :fill_en, 1
   wire :fill_idx, 4
@@ -388,7 +388,7 @@ defmodule PicoBEAM.RTL.BarrelEngine do
 
   # ---- frames
   wire :fr_fill_d, 36
-  wire :fr_ret_pc, 9
+  wire :fr_ret_pc, 12
   wire :fr_ret_dest, 4
   wire :fr_gc_q, 36
 
@@ -517,12 +517,12 @@ defmodule PicoBEAM.RTL.BarrelEngine do
   # the register pair to fill in.
   #
   #   {depth:4, pc:9, rd:4}   at {slot:5, idx:2}
-  memory :ctch, width: 17, depth: 128
+  memory :ctch, width: 20, depth: 128
   # 32 x 3-bit nesting counters in one shift-indexed register, the same
   # idiom the frame store's depths use
   wire :ccnt, 96, init: 0
   wire :cc_n, 3
-  wire :cc_top, 17
+  wire :cc_top, 20
   wire :cc_inc, 1
   wire :cc_dec, 1
   wire :cc_we, 1
@@ -530,12 +530,12 @@ defmodule PicoBEAM.RTL.BarrelEngine do
   wire :cc_clr, 96
   wire :cc_mask, 96
   wire :c_depth, 4
-  wire :c_pc, 9
+  wire :c_pc, 12
   wire :c_rd, 4
   wire :has_catch, 1
   wire :catch_go, 1
   wire :catch_deep, 1
-  wire :catch_pc, 9
+  wire :catch_pc, 12
   wire :try_ovf, 1
   wire :any_try, 1
   wire :any_tend, 1
@@ -577,15 +577,15 @@ defmodule PicoBEAM.RTL.BarrelEngine do
   # ---- seat unit / tables
   wire :su_cmd, 4
   wire :su_slot, 5
-  wire :su_pc, 9
+  wire :su_pc, 12
   wire :su_rq_push, 1
   wire :su_rq_data, 5
   wire :su_rq_pop, 1
   wire :pt_cmd, 4
   wire :pt_slot, 5
-  wire :pt_pc, 9
+  wire :pt_pc, 12
   wire :pt_rd_slot, 5
-  wire :pt_rd_pc, 9
+  wire :pt_rd_pc, 12
   wire :pt_rd_serial, 22
   wire :pt_rd_state, 2
   wire :alloc_ok, 1
@@ -602,7 +602,7 @@ defmodule PicoBEAM.RTL.BarrelEngine do
   wire :seat_wr, 1
   wire :seat_clr, 1
   wire :seat_idx, 2
-  wire :seat_pc, 9
+  wire :seat_pc, 12
   wire :spawn_ready, 1
   wire :spawn_full, 1
   wire :op_swap, 1
@@ -641,7 +641,7 @@ defmodule PicoBEAM.RTL.BarrelEngine do
   wire :ctl0, 1
   wire :ctl1, 1
   wire :ctl2, 1
-  wire :pc_target, 9
+  wire :pc_target, 12
   wire :any_fault, 1
   wire :any_fault_r, 8
   wire :wb0, 1
@@ -715,7 +715,7 @@ defmodule PicoBEAM.RTL.BarrelEngine do
   wire :cf_ar_d, 4, init: 0
   wire :ftgt_en, 1
   wire :ftgt_seat, 2
-  wire :ftgt_pc, 9
+  wire :ftgt_pc, 12
   wire :ba_bad, 1
   wire :ba_go, 1
   wire :ba_pend, 1, init: 0
@@ -1035,12 +1035,12 @@ defmodule PicoBEAM.RTL.BarrelEngine do
   wire :any_rwaitt, 1
   wire :tm_arm, 1
   wire :tm_delay, 32
-  wire :tm_pc, 9
+  wire :tm_pc, 12
   wire :tm_cancel, 1
   wire :tm_cancel_slot, 5
   wire :tm_fire, 1
   wire :tm_fire_slot, 5
-  wire :tm_fire_pc, 9
+  wire :tm_fire_pc, 12
   wire :tm_ready, 1
   wire :tm_now, 32
   wire :tm_armed, 32
@@ -1050,7 +1050,7 @@ defmodule PicoBEAM.RTL.BarrelEngine do
   wire :tf2, 1
   wire :tf3, 1
   wire :tm_resident, 1
-  wire :wk_pc, 9, init: 0
+  wire :wk_pc, 12, init: 0
   wire :wk_jump, 1, init: 0
   wire :lt_next, 5
   wire :lt_nextv, 1
@@ -1219,7 +1219,7 @@ defmodule PicoBEAM.RTL.BarrelEngine do
   wire :rt_deng, 4, init: 0
   wire :rt_hword, 36, init: 0
   wire :rt_arity, 3, init: 0
-  wire :rt_pc, 9, init: 0
+  wire :rt_pc, 12, init: 0
   wire :rt_pay, 36
   wire :rt_sel, 36
   wire :rt_j, 3
@@ -1240,7 +1240,7 @@ defmodule PicoBEAM.RTL.BarrelEngine do
   # ingress side of the same transaction
   wire :rx_pend, 1, init: 0
   wire :rx_rep, 1, init: 0
-  wire :rx_pc, 9, init: 0
+  wire :rx_pc, 12, init: 0
   wire :rx_ar, 3, init: 0
   wire :rx_from, 36, init: 0
   wire :rx_child, 36, init: 0
@@ -1259,7 +1259,7 @@ defmodule PicoBEAM.RTL.BarrelEngine do
   wire :rx6, 36, init: 0
   wire :rx7, 36, init: 0
   wire :su_rsp_req, 1
-  wire :su_rsp_pc, 9
+  wire :su_rsp_pc, 12
   wire :su_rsp_idx, 5
   wire :su_rsp_arg, 36
   wire :su_rsp_ok, 1
@@ -1340,7 +1340,7 @@ defmodule PicoBEAM.RTL.BarrelEngine do
   # bundle 1 instead of the label it named — re-running the spawn ahead
   # of it, forever, once every deadline.
   wire :unblock_jump, 1
-  wire :unblock_pc, 9
+  wire :unblock_pc, 12
   wire :kill_en, 1
   wire :kill_seat, 2
   wire :wk0, 1
@@ -1550,7 +1550,7 @@ defmodule PicoBEAM.RTL.BarrelEngine do
     ctl0 = bor(c0_try, bor(c0_jmp, bor(br0, bor(c0_call, bor(c0_spawn, c0_rpeek)))))
     ctl1 = bor(c1_try, bor(c1_jmp, bor(br1, bor(c1_call, bor(c1_spawn, c1_rpeek)))))
     ctl2 = bor(c2_try, bor(c2_jmp, bor(br2, bor(c2_call, bor(c2_spawn, c2_rpeek)))))
-    pc_target = ctl0 * imm0[8..0] + ctl1 * imm1[8..0] + ctl2 * imm2[8..0]
+    pc_target = ctl0 * imm0 + ctl1 * imm1 + ctl2 * imm2
 
     any_jump = bor(bor(c0_jmp, br0), bor(bor(c1_jmp, br1), bor(c2_jmp, br2)))
     any_call = bor(c0_call, bor(c1_call, c2_call))
@@ -1667,7 +1667,7 @@ defmodule PicoBEAM.RTL.BarrelEngine do
     #   3/4 link/unlink: [from]           6 exit: [from, reason]
     #   5 monitor:       [from, ref]      7 DOWN: [ref, from, reason]
     rt_pay =
-      band(rt_kind == 1, rt_i == 0) * (rt_arity * 512 + rt_pc) +
+      band(rt_kind == 1, rt_i == 0) * (rt_arity * 4096 + rt_pc) +
         band(bnot(band(rt_kind == 1, rt_i == 0)), bnot(rt_sup)) * rt_sel +
         band(rt_sup, bor(rt_kind == 3, rt_kind == 4)) * sx_from +
         band(rt_sup, rt_kind == 5) *
@@ -2226,7 +2226,7 @@ defmodule PicoBEAM.RTL.BarrelEngine do
     tm_arm = rwaitt_blk
     tm_delay =
       c0_rwaitt * rw_rd0[31..0] + c1_rwaitt * rw_rd2[31..0] + c2_rwaitt * rw_rd4[31..0]
-    tm_pc = c0_rwaitt * imm0[8..0] + c1_rwaitt * imm1[8..0] + c2_rwaitt * imm2[8..0]
+    tm_pc = c0_rwaitt * imm0 + c1_rwaitt * imm1 + c2_rwaitt * imm2
 
     # a message that lands cancels the deadline it beat
     tm_cancel = wake_en_r
@@ -2504,8 +2504,8 @@ defmodule PicoBEAM.RTL.BarrelEngine do
     cc_n = band(ccnt >>> (x_slot * 3), 7)
     has_catch = cc_n != 0
     cc_top = ctch[x_slot * 4 + band(has_catch, 1) * (cc_n - 1)]
-    c_depth = cc_top[16..13]
-    c_pc = cc_top[12..4]
+    c_depth = cc_top[19..16]
+    c_pc = cc_top[15..4]
     c_rd = cc_top[3..0]
 
     # four nested `try`s per process. A fifth is `:system_limit`
@@ -2703,9 +2703,9 @@ defmodule PicoBEAM.RTL.BarrelEngine do
 
     ftgt_en = cf_d
     ftgt_seat = cf_seat_d
-    ftgt_pc = hp_rd_late[16..8]
+    ftgt_pc = hp_rd_late[19..8]
 
-    # funinfo is {entry:9, arity:4, nfree:4} in a fixnum payload
+    # funinfo is {entry:12, arity:4, nfree:4} in a fixnum payload
     ba_bad = band(cf_d, hp_rd_late[7..4] != cf_ar_d)
     # an X-stage fault owns the death port this cycle; the arity error
     # waits a turn rather than being dropped
@@ -2939,8 +2939,9 @@ defmodule PicoBEAM.RTL.BarrelEngine do
     bx_cur =
       (x_seat == 0) * bx0 + (x_seat == 1) * bx1 + (x_seat == 2) * bx2 + (x_seat == 3) * bx3
 
-    # the arity rides `spawn`'s immediate above the nine-bit target
-    sp_arity_x = c0_spawn * imm0[11..9] + c1_spawn * imm1[11..9] + c2_spawn * imm2[11..9]
+    # the arity rides `spawn`'s opcode (0x58 + arity); the immediate is
+    # all twelve bits of target
+    sp_arity_x = c0_spawn * op0[2..0] + c1_spawn * op1[2..0] + c2_spawn * op2[2..0]
     sp_mask = bnot(65535 <<< sp_arity_x)
     sp_boxed_x = band(bx_cur, sp_mask) != 0
 
@@ -3088,7 +3089,8 @@ defmodule PicoBEAM.RTL.BarrelEngine do
     dbg_evicts = evicts
     dbg_x_seat = x_seat
     dbg_x_en = x_en
-    dbg_pc = x_pc
+    # the observation tap stays nine bits (snapshot words, signature)
+    dbg_pc = x_pc[8..0]
   end
 
   on :clk do
@@ -3351,7 +3353,7 @@ defmodule PicoBEAM.RTL.BarrelEngine do
       ccnt = bor(band(band(ccnt, bnot(cc_clr)), bnot(cc_mask)), cc_we * (cc_val <<< (x_slot * 3)))
 
       if cc_inc == 1 do
-        ctch[x_slot * 4 + cc_n] = x_depth * 8192 + pc_target * 16 + try_dest_x
+        ctch[x_slot * 4 + cc_n] = x_depth * 65536 + pc_target * 16 + try_dest_x
       end
 
       # The reason has to be REMEMBERED: by the time the frames have
@@ -3619,8 +3621,8 @@ defmodule PicoBEAM.RTL.BarrelEngine do
       # what `rg_take` backpressures on.
       if rg_take == 1 do
         if rx_idx == 0 do
-          rx_pc = ring_r_word[8..0]
-          rx_ar = ring_r_word[11..9]
+          rx_pc = ring_r_word[11..0]
+          rx_ar = ring_r_word[14..12]
           rx_from = rg_pid
         end
 

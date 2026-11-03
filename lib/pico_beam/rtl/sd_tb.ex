@@ -22,7 +22,7 @@ defmodule PicoBEAM.RTL.SdTb do
   output :done, 1
   output :last_rx, 8
   output :code_en, 1
-  output :code_addr, 9
+  output :code_addr, 12
   output :code_data, 72
 
   wire :w_pe, 1

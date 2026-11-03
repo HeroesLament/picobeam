@@ -81,7 +81,7 @@ defmodule PicoBEAM.RTL.SeatUnit do
 
   # ---- BarrelSeq observation
   input :f_seat, 2
-  input :f_pc, 9
+  input :f_pc, 12
   # BarrelSeq's f_en: this seat's context is RUNNING (not parked for a
   # call/ret/spawn, not mid ret-fill, not dead). Only a running context
   # may be descheduled — swapping one out mid-fill would abandon the
@@ -108,7 +108,7 @@ defmodule PicoBEAM.RTL.SeatUnit do
   # holding a dead process's registers is a set of GC roots, and
   # `RootWalker` walks the save area of every live slot.
   input :rsp_req, 1
-  input :rsp_pc, 9
+  input :rsp_pc, 12
   # the newborn's initial register file, one word per fill cycle: the
   # engine answers `rsp_idx` with the argument at that index, or zero
   # above the arity. A save area left holding a dead process's
@@ -123,7 +123,7 @@ defmodule PicoBEAM.RTL.SeatUnit do
 
   input :spawn_commit, 1
   input :spawn_seat, 2
-  input :spawn_pc, 9
+  input :spawn_pc, 12
   input :spawn_rd, 4
   output :spawn_ready, 1
   output :spawn_full, 1
@@ -138,14 +138,14 @@ defmodule PicoBEAM.RTL.SeatUnit do
   output :seat_wr, 1
   output :seat_clr, 1
   output :seat_idx, 2
-  output :seat_pc, 9
+  output :seat_pc, 12
 
   # ---- ProcTable
   output :pt_cmd, 4
   output :pt_slot, 5
-  output :pt_pc, 9
+  output :pt_pc, 12
   output :pt_rd_slot, 5
-  input :pt_rd_pc, 9
+  input :pt_rd_pc, 12
   input :pt_rd_serial, 22
   input :pt_alloc_slot, 5
   input :pt_alloc_serial, 22

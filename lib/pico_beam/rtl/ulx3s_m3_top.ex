@@ -162,9 +162,9 @@ defmodule PicoBEAM.RTL.Ulx3sM3Top do
   wire :ld_en_d, 1, init: 0
   wire :settle, 4, init: 0
   wire :rom_q, 72
-  wire :ld_addr9, 9
+  wire :ld_addr9, 12
   wire :boot_en, 1
-  wire :boot_pc_w, 9
+  wire :boot_pc_w, 12
   wire :sel_comb, 1, init: 0
   wire :eng_rst, 1
 

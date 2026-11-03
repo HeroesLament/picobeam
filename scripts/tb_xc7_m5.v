@@ -224,7 +224,7 @@ module tb;
   // ---- hot load (CTRL2 op 0 with bit 29; STATUS3 bit 26)
   reg hw_par = 0;
 
-  task hwr(input pool, input [8:0] a, input [71:0] d);
+  task hwr(input pool, input [11:0] a, input [71:0] d);
     integer k;
     begin
       axw(32'h14, (32'd1 << 29) | (32'd0 << 26) | d[23:0]);
@@ -266,7 +266,7 @@ module tb;
     repeat (8) @(posedge fclk);
 
     axr(32'h24, rd);
-    check(rd == 32'h0B5E0009, "design id");
+    check(rd == 32'h0B5E000A, "design id");
 
     // hold the core, release the MMCM, wait for lock
     axw(32'h10, 32'h0000_0002);
@@ -304,8 +304,8 @@ module tb;
     for (si = 0; si < 4096 && errors == 0 && script[si][91:88] != 0; si = si + 1) begin
       sop = script[si][91:88]; sarg = script[si][87:72]; sdat = script[si][71:0];
       case (sop)
-        1: begin hwr(1'b0, sarg[8:0], sdat); nwr = nwr + 1; end
-        2: begin hwr(1'b1, sarg[8:0], sdat); nwr = nwr + 1; end
+        1: begin hwr(1'b0, sarg[11:0], sdat); nwr = nwr + 1; end
+        2: begin hwr(1'b1, sarg[11:0], sdat); nwr = nwr + 1; end
         3: hpush(1'b1, 4'd0, epid[31:28], sarg[6:0], epid);
         4: hpush(1'b0, 4'd0, 4'd0, 7'd0, sdat[35:0]);
         5: begin
@@ -394,6 +394,19 @@ module tb;
 
 `ifndef POSTSYNTH
   // the first pb_clk cycle each observation tap is X while the core runs
+`ifdef PCTRACE
+  // +TRACE_FROM=<cyc> +TRACE_N=<n>: per-cycle PCs of both engines
+  integer tr_from = 0, tr_n = 0;
+  initial begin
+    if (!$value$plusargs("TRACE_FROM=%d", tr_from)) tr_from = 0;
+    if (!$value$plusargs("TRACE_N=%d", tr_n)) tr_n = 0;
+  end
+  always @(posedge pb_src) if (dut.go === 1'b1 && dut.cyc >= tr_from && dut.cyc < tr_from + tr_n)
+    $display("  tr %0d e0 x=%h f=%h tgt=%h wpc=%h ret=%h cpc=%h ftgt=%h | e1 x=%h f=%h tgt=%h wpc=%h",
+      dut.cyc, dut.pb_eng0_x_pc, dut.pb_eng0_f_pc, dut.pb_eng0_pc_target, dut.pb_eng0_seq_w_pc_val,
+      dut.pb_eng0_fr_ret_pc, dut.pb_eng0_c_pc, dut.pb_eng0_ftgt_pc,
+      dut.pb_eng1_x_pc, dut.pb_eng1_f_pc, dut.pb_eng1_pc_target, dut.pb_eng1_seq_w_pc_val);
+`endif
   reg seen_ov = 0, seen_pc = 0, seen_fl = 0, seen_od = 0;
   always @(posedge pb_src) if (dut.go === 1'b1) begin
     if (!seen_ov && ^{dut.ov0, dut.ov1} === 1'bx) begin seen_ov = 1; $display("  first_x ov at cyc %0d", dut.cyc); end

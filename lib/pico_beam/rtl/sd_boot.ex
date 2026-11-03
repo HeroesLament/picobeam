@@ -108,15 +108,15 @@ defmodule PicoBEAM.RTL.SdBoot do
 
   # engine side-door
   output :code_en, 1
-  output :code_addr, 9
+  output :code_addr, 12
   output :code_data, 72
   output :pool_en, 1
   output :pool_addr, 8
   output :pool_data, 36
 
   # the image's entry points, valid once `done` is up
-  output :entry0, 9
-  output :entry1, 9
+  output :entry0, 12
+  output :entry1, 12
 
   output :busy, 1
   output :done, 1

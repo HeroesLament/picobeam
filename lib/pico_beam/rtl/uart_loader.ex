@@ -39,14 +39,14 @@ defmodule PicoBEAM.RTL.UartLoader do
   input :rx, 1
 
   output :code_en, 1
-  output :code_addr, 9
+  output :code_addr, 12
   output :code_data, 72
   output :pool_en, 1
   output :pool_addr, 8
   output :pool_data, 36
 
-  output :entry0, 9
-  output :entry1, 9
+  output :entry0, 12
+  output :entry1, 12
   # a whole image has landed: reset the engines and boot it
   output :img_done, 1
   # an image is arriving; hold the engines in reset
@@ -61,13 +61,13 @@ defmodule PicoBEAM.RTL.UartLoader do
   wire :rx_data, 8
   wire :rx_valid, 1
   wire :p_rst, 1
-  wire :p_e0, 9
-  wire :p_e1, 9
+  wire :p_e0, 12
+  wire :p_e1, 12
   wire :p_complete, 1
   wire :p_bad, 1
   wire :cp_d, 1, init: 0
-  wire :e0_r, 9, init: 0
-  wire :e1_r, 9, init: 0
+  wire :e0_r, 12, init: 0
+  wire :e1_r, 12, init: 0
   wire :done_r, 1, init: 0
   wire :len_r, 13, init: 0
   wire :p_len, 13

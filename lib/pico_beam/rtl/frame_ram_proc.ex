@@ -88,7 +88,7 @@ defmodule PicoBEAM.RTL.FrameRamProc do
   # push side — the call commit's frame claim + link record
   input :push_en, 1
   input :push_slot, 5
-  input :push_pc, 9
+  input :push_pc, 12
   input :push_dest, 4
 
   # spill stream from the register window's drain unit
@@ -133,7 +133,7 @@ defmodule PicoBEAM.RTL.FrameRamProc do
   input :fill_slot, 5
   output :fill_data, 36
 
-  output :ret_pc_out, 9
+  output :ret_pc_out, 12
   output :ret_dest_out, 4
 
   output :overflow, 1
@@ -153,7 +153,7 @@ defmodule PicoBEAM.RTL.FrameRamProc do
   memory :frames, width: 36, depth: 8192, sync_read: :clk
   # the link store: pc(9) | dest(4). Distributed (async) — 256 x 13 in
   # an EBR was the M2 waste `notes/15` flagged; this is that one-liner.
-  memory :rets, width: 13, depth: 512
+  memory :rets, width: 16, depth: 512
 
   # 32 x 4-bit depth counters in one shift-indexed register
   wire :depths, 128, init: 0
@@ -168,7 +168,7 @@ defmodule PicoBEAM.RTL.FrameRamProc do
   wire :push_ok, 1
   wire :pop_ok, 1
   wire :d_new, 4
-  wire :ret_q, 13
+  wire :ret_q, 16
   wire :gc_addr, 13
   wire :fr_ra, 13
   wire :fr_rq, 36
@@ -216,7 +216,7 @@ defmodule PicoBEAM.RTL.FrameRamProc do
               band(bnot(band(gc_en, gc_wr)), 1) * (sp_slot * 256 + sp_depth * 16 + spill_idx)
     fr_wd = band(gc_en, gc_wr) * gc_data + band(bnot(band(gc_en, gc_wr)), 1) * spill_data
     ret_q = rets[fill_slot * 16 + fill_depth]
-    ret_pc_out = ret_q[12..4]
+    ret_pc_out = ret_q[15..4]
     ret_dest_out = ret_q[3..0]
     depth_out = fill_depth
     q_depth = band(depths >>> (q_slot * 4), 15)

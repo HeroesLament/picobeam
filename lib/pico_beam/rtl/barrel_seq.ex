@@ -120,7 +120,7 @@ defmodule PicoBEAM.RTL.BarrelSeq do
   # seat control (testbench now; seat unit at pass 6)
   input :seat_wr, 1
   input :seat_idx, 2
-  input :seat_pc, 9
+  input :seat_pc, 12
   # vacate a seat: the context goes idle and stops fetching, its
   # in-flight D/X bundles retire normally (the seat unit waits one
   # owner turn before trusting f_pc as the saved resume address)
@@ -128,7 +128,7 @@ defmodule PicoBEAM.RTL.BarrelSeq do
 
   # X-stage classification of the in-flight bundle (engine/TB)
   input :is_jump, 1
-  input :pc_target, 9
+  input :pc_target, 12
   input :is_call, 1
   input :is_cfun, 1
   input :is_ret, 1
@@ -141,7 +141,7 @@ defmodule PicoBEAM.RTL.BarrelSeq do
   # to be unwound first, and `catch_pc` is where the context resumes.
   input :catch_go, 1
   input :catch_deep, 1
-  input :catch_pc, 9
+  input :catch_pc, 12
   # the VM has halted (`notes/33`). Every context stops FETCHING; none of
   # them is reset, because the population, the windows and the counters
   # are the only record of what the machine was doing when it stopped.
@@ -165,7 +165,7 @@ defmodule PicoBEAM.RTL.BarrelSeq do
   input :drain_done_seat, 2
 
   # popped link's resume address (FrameRam)
-  input :ret_pc_in, 9
+  input :ret_pc_in, 12
 
   # spawn handshake (SeatUnit): ready = a free slot AND the drain is
   # idle AND the seat unit's FSM is free; full = the proc table is out
@@ -222,7 +222,7 @@ defmodule PicoBEAM.RTL.BarrelSeq do
   # to land on when nothing arrived, so the unblock cannot always be
   # "one past the wait"
   input :unblock_jump, 1
-  input :unblock_pc, 9
+  input :unblock_pc, 12
   # kill a resident from OUTSIDE the pipeline: a process whose mailbox
   # overflowed dies wherever it is, and it may be sitting on a seat
   # with no bundle in X to fault
@@ -245,7 +245,7 @@ defmodule PicoBEAM.RTL.BarrelSeq do
   # which is why it carries its own seat rather than riding `fault_in`.
   input :ftgt_en, 1
   input :ftgt_seat, 2
-  input :ftgt_pc, 9
+  input :ftgt_pc, 12
   input :bad_en, 1
   input :bad_seat, 2
   input :kill_en, 1
@@ -254,17 +254,17 @@ defmodule PicoBEAM.RTL.BarrelSeq do
   # pipeline
   output :f_seat, 2
   output :f_en, 1
-  output :f_pc, 9
+  output :f_pc, 12
   output :d_seat, 2
   output :d_en, 1
   output :x_seat, 2
   output :x_en, 1
-  output :x_pc, 9
+  output :x_pc, 12
 
   # call/ret/fill strobes
   output :call_commit, 1
   output :commit_seat, 2
-  output :link_pc, 9
+  output :link_pc, 12
   output :pop_en, 1
   # the shallow landing: a fault caught in the frame the `try` itself
   # was in, so there is nothing to unwind. The engine writes the
@@ -299,7 +299,7 @@ defmodule PicoBEAM.RTL.BarrelSeq do
   output :f_blocked, 1
   # the parked target of whichever context owns this F slot (the
   # newborn's entry pc at spawn commit)
-  output :f_tgt, 9
+  output :f_tgt, 12
 
   # death events + per-context status
   output :died, 1
@@ -322,14 +322,14 @@ defmodule PicoBEAM.RTL.BarrelSeq do
   wire :cstate1, 5, init: 0
   wire :cstate2, 5, init: 0
   wire :cstate3, 5, init: 0
-  wire :pc0, 9, init: 0
-  wire :pc1, 9, init: 0
-  wire :pc2, 9, init: 0
-  wire :pc3, 9, init: 0
-  wire :tgt0, 9, init: 0
-  wire :tgt1, 9, init: 0
-  wire :tgt2, 9, init: 0
-  wire :tgt3, 9, init: 0
+  wire :pc0, 12, init: 0
+  wire :pc1, 12, init: 0
+  wire :pc2, 12, init: 0
+  wire :pc3, 12, init: 0
+  wire :tgt0, 12, init: 0
+  wire :tgt1, 12, init: 0
+  wire :tgt2, 12, init: 0
+  wire :tgt3, 12, init: 0
   wire :pc_c0, 1, init: 0
   wire :pc_r0, 1, init: 0
   wire :pc_h0, 1, init: 0
@@ -358,7 +358,7 @@ defmodule PicoBEAM.RTL.BarrelSeq do
 
   # comb helpers
   wire :cur_state, 5
-  wire :cur_pc, 9
+  wire :cur_pc, 12
   wire :cur_dp, 1
   wire :cstate_x, 5
   wire :pend_h_x, 1
@@ -375,9 +375,9 @@ defmodule PicoBEAM.RTL.BarrelSeq do
   # W stage: the X bundle's classification, one cycle late
   wire :w_v, 1, init: 0
   wire :w_k, 2, init: 0
-  wire :w_pc, 9, init: 0
-  wire :w_tgt, 9, init: 0
-  wire :w_cpc, 9, init: 0
+  wire :w_pc, 12, init: 0
+  wire :w_tgt, 12, init: 0
+  wire :w_cpc, 12, init: 0
   wire :w_gc, 1, init: 0
   wire :w_flt, 1, init: 0
   wire :w_cgo, 1, init: 0
@@ -425,7 +425,7 @@ defmodule PicoBEAM.RTL.BarrelSeq do
   wire :w_cs, 5
   wire :w_cs_wr, 1
   wire :w_pc_wr, 1
-  wire :w_pc_val, 9
+  wire :w_pc_val, 12
   wire :w_tgt_wr, 1
   wire :w_pend_wr, 1
   wire :w_cs_hit, 1

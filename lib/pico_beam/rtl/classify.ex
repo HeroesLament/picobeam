@@ -156,7 +156,8 @@ defmodule PicoBEAM.RTL.Classify do
     is_try = op == 0x53
     is_tend = op == 0x54
     is_sys = op[6]
-    is_spawn = op == 0x40
+    # 0x58..0x5F: `spawn` with the arity in the opcode's low three bits
+    is_spawn = op[7..3] == 11
     is_yield = op == 0x4F
     is_self = op == 0x14
     is_send = op == 0x41

@@ -133,7 +133,9 @@ defmodule PicoBEAM.Encoding do
     # target comes from a register instead of the bundle.
     callfun: 0x3B,
     # group 0x4_/0x5_ — system
-    spawn: 0x40,
+    # 0x58 + arity (0..7): the twelve-bit immediate is all target, so the
+    # arity moved from it into the opcode (code memory 4096 bundles)
+    spawn: 0x58,
     send: 0x41,
     recv: 0x42,
     recv_start: 0x43,
@@ -364,10 +366,10 @@ defmodule PicoBEAM.Encoding do
         if arity > 7 do
           raise Error,
             message: "spawn arity #{arity} > 7: the arity rides `spawn`'s " <>
-              "immediate above the target, and there are three bits (notes/49)"
+              "opcode (0x58 + arity), and there are eight of them"
         end
 
-        si(:spawn, rd, (arity &&& 0x7) <<< 9 ||| (t &&& 0x1FF))
+        (opcode(:spawn) + arity) <<< 16 ||| (rd &&& 0xF) <<< 12 ||| (t &&& 0xFFF)
       # send reads TWO registers and writes none, so the pid and the
       # message ride f2/f3 — the slot's ordinary ra/rb read ports — and
       # f1 (the rd position) stays empty. Same trick `tset` uses; it
@@ -579,8 +581,8 @@ defmodule PicoBEAM.Encoding do
         {Map.put(bases, f, addr), addr + tuple_size(Map.fetch!(assembled, f).code)}
       end)
 
-    if total > 512 do
-      raise Error, message: "image is #{total} bundles; CodeMem holds 512 (Q5 lifts this)"
+    if total > 4096 do
+      raise Error, message: "image is #{total} bundles; CodeMem holds 4096"
     end
 
     {pool, pool_idx} = build_pool(assembled, bases)

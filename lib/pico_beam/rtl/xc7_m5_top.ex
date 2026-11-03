@@ -41,7 +41,7 @@ defmodule PicoBEAM.RTL.Xc7M5Top do
              0  [29] = 0: image byte: [10:0] address, [23:16] byte
                 [29] = 1: hot load, [28:26] the step (`PicoBEAM.Link`):
                   0..2  data[23:0], [47:24], [71:48] from [23:0]
-                  3     write data[71:0] as code bundle [8:0] of
+                  3     write data[71:0] as code bundle [11:0] of
                         both engines, and toggle the hot-load request
                   4     write data[35:0] as pool word [7:0] of both
                         engines, and toggle it
@@ -58,8 +58,8 @@ defmodule PicoBEAM.RTL.Xc7M5Top do
       STATUS0 [15:0] DRP DO  [23:16] DRDY count  [30] DRP busy
               [31] MMCM locked
       STATUS1 [23:0] pb_clk cycles counted in the gate  [31] gate open
-      STATUS2 0x0B5E0009 (design id; 8 had no hot load, 7 no host port,
-              6 no snapshot)
+      STATUS2 0x0B5E000A (design id; 9 had 512-bundle code memory, 8 no
+              hot load, 7 no host port, 6 no snapshot)
       STATUS3 [23:0] heartbeat  [26] hot-load ack  [27] host-out pop ack
               [28] host-in push ack  [29] snapshot ack  [30] locked
               [31] run window done
@@ -295,7 +295,7 @@ defmodule PicoBEAM.RTL.Xc7M5Top do
   wire :hw_d0, 24, init: 0
   wire :hw_d1, 24, init: 0
   wire :hw_d2, 24, init: 0
-  wire :hw_a, 9, init: 0
+  wire :hw_a, 12, init: 0
   wire :hw_pool, 1, init: 0
   wire :hw_req, 1, init: 0
   wire :hw_req_s, 1
@@ -577,7 +577,7 @@ defmodule PicoBEAM.RTL.Xc7M5Top do
 
     status0 = {mm_locked, drp_busy, pad6, drp_cnt, drp_do_q}
     status1 = {gate, pad7, mcount}
-    status2 = 0x0B5E0009
+    status2 = 0x0B5E000A
     status3 = {done_s, locked_s, ack_s, hin_ack_s, hout_ack_s, hw_ack_s, pad2, heartbeat}
 
     img_rd = img[bi[10..0]]
@@ -648,13 +648,13 @@ defmodule PicoBEAM.RTL.Xc7M5Top do
       if ctrl2[28..26] == 2, do: hw_d2 = ctrl2[23..0]
 
       if ctrl2[28..26] == 3 do
-        hw_a = ctrl2[8..0]
+        hw_a = ctrl2[11..0]
         hw_pool = 0
         hw_req = bnot(hw_req)
       end
 
       if ctrl2[28..26] == 4 do
-        hw_a = ctrl2[8..0]
+        hw_a = ctrl2[11..0]
         hw_pool = 1
         hw_req = bnot(hw_req)
       end

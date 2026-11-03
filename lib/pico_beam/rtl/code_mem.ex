@@ -2,8 +2,11 @@ defmodule PicoBEAM.RTL.CodeMem do
   @moduledoc """
   M2 scaffold — bundle store.
 
-  One 72-bit-wide sync-read memory, 512 bundles deep: yosys pairs two
-  deep-configured EBRs side by side (Probe A's inference, twice). A fetch
+  One 72-bit-wide sync-read memory, 4096 bundles deep (12-bit pc). On the
+  7020 that is eight RAMB36 side by side in their 4K x 9 shape, so a
+  fetch is still one block read with no output mux (oxibit-synth maps it
+  so, 11-03). It was 512 deep (two ECP5 EBRs, then one RAMB36) until the
+  shell outgrew it. A fetch
   is therefore ONE registered read — `rd_bundle` is valid the cycle after
   `rd_addr` is presented, which is the timing the sequencer's fetch phase
   assumes.
@@ -23,15 +26,15 @@ defmodule PicoBEAM.RTL.CodeMem do
 
   clock :clk, freq: 50.0
 
-  input :rd_addr, 9
+  input :rd_addr, 12
   output :rd_bundle, 72
 
   # loader-side (unused in M2; the image arrives via init at elaboration)
   input :wr_en, 1
-  input :wr_addr, 9
+  input :wr_addr, 12
   input :wr_data, 72
 
-  memory :code, width: 72, depth: 512, sync_read: :clk
+  memory :code, width: 72, depth: 4096, sync_read: :clk
 
   comb do
     rd_bundle = code[rd_addr]

@@ -22,8 +22,8 @@ defmodule PicoBEAM.Link do
   Erlang's rule, and the whole module base table it was going to take
   (notes, 11-02) turns out to be one `jmp` per export.
 
-  Old versions are not purged: code memory is a bump allocator. 512
-  bundles is small, so shell lines do not bump; see `link_line/3`.
+  Old versions are not purged: code memory (4096 bundles an engine) is a
+  bump allocator, and shell lines do not bump; see `link_line/3`.
 
   ## State
 
@@ -40,11 +40,11 @@ defmodule PicoBEAM.Link do
     defexception [:message]
   end
 
-  @code_depth 512
+  @code_depth 4096
   @pool_depth 256
 
   defstruct code_next: 0,
-            scratch: {416, 512},
+            scratch: {3968, 4096},
             pool: %{},
             pool_next: 0,
             atoms: [],
@@ -55,10 +55,10 @@ defmodule PicoBEAM.Link do
   @doc """
   Link state for a machine booted from `img` (`Encoding.image/2`):
   everything the image occupies is taken. `scratch:` is the region shell
-  lines are linked into, `{first, limit}`, default the top 96 bundles.
+  lines are linked into, `{first, limit}`, default the top 128 bundles.
   """
   def from_image(img, opts \\ []) do
-    {first, limit} = Keyword.get(opts, :scratch, {416, @code_depth})
+    {first, limit} = Keyword.get(opts, :scratch, {@code_depth - 128, @code_depth})
     used = length(img.image)
 
     if used > first do

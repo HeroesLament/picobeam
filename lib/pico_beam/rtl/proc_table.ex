@@ -97,14 +97,14 @@ defmodule PicoBEAM.RTL.ProcTable do
   # a legal, plausible, wrong thing to do.
   input :cmd, 4
   input :cmd_slot, 5
-  input :cmd_pc, 9
+  input :cmd_pc, 12
 
   output :alloc_ok, 1
   output :alloc_slot, 5
   output :alloc_serial, 22
 
   input :rd_slot, 5
-  output :rd_pc, 9
+  output :rd_pc, 12
   output :rd_serial, 22
   output :rd_state, 2
 
@@ -170,7 +170,7 @@ defmodule PicoBEAM.RTL.ProcTable do
   output :occ, 6
 
   # columns
-  memory :pcs, width: 9, depth: 32
+  memory :pcs, width: 12, depth: 32
   memory :serials, width: 22, depth: 32
   memory :states, width: 2, depth: 32
   memory :reasons, width: 8, depth: 32

@@ -23,7 +23,8 @@ defmodule PicoBEAM.RTL.M5Core do
   of the PROGRAM, and a bitstream rebuild costs twenty minutes of
   place-and-route while writing a card costs seconds.
 
-  `entry1 = 0x1FF` means "do not boot engine 1", so a single-engine
+  `entry1 = 0x1FF` means "do not boot engine 1" (so with a 12-bit pc no
+  engine's entry may be at bundle 511), so a single-engine
   image runs on this bitstream unchanged.
 
   ## What is and is not proven here
@@ -145,7 +146,7 @@ defmodule PicoBEAM.RTL.M5Core do
   # these to 0.
   input :hot_ce, 1
   input :hot_pe, 1
-  input :hot_addr, 9
+  input :hot_addr, 12
   input :hot_data, 72
   output :hout_depth, 6
 
@@ -156,13 +157,13 @@ defmodule PicoBEAM.RTL.M5Core do
   wire :sd_state, 4
   wire :sd_lrx, 8
   wire :sd_ce, 1
-  wire :sd_ca, 9
+  wire :sd_ca, 12
   wire :sd_cd, 72
   wire :sd_pe, 1
   wire :sd_pa, 8
   wire :sd_pd, 36
-  wire :sd_e0, 9
-  wire :sd_e1, 9
+  wire :sd_e0, 12
+  wire :sd_e1, 12
 
   # ---- boot: 0 loading · 1 settle · 2 pulse boot_en · 3 running
   wire :bst, 2, init: 0
@@ -176,23 +177,23 @@ defmodule PicoBEAM.RTL.M5Core do
   wire :from_uart, 1, init: 0
   wire :wrote_r, 1, init: 0
   wire :ld_ce, 1
-  wire :ld_ca, 9
+  wire :ld_ca, 12
   wire :ld_cd, 72
   wire :ld_pe, 1
   wire :ld_pa, 8
   wire :ld_pd, 36
-  wire :ent0, 9
-  wire :ent1, 9
+  wire :ent0, 12
+  wire :ent1, 12
 
   # ---- the UART loader
   wire :ul_ce, 1
-  wire :ul_ca, 9
+  wire :ul_ca, 12
   wire :ul_cd, 72
   wire :ul_pe, 1
   wire :ul_pa, 8
   wire :ul_pd, 36
-  wire :ul_e0, 9
-  wire :ul_e1, 9
+  wire :ul_e0, 12
+  wire :ul_e1, 12
   wire :ul_done, 1
   wire :ul_recv, 1
   wire :ul_store, 1
