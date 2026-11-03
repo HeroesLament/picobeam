@@ -220,9 +220,10 @@ defmodule PicoBEAM.RTL.NameTable do
     qh7 = band(v7, n7 == q_name)
     q_hit = bor(qh0, bor(qh1, bor(qh2, bor(qh3, bor(qh4, bor(qh5, bor(qh6, qh7)))))))
     # registration keeps names unique, so the hit vector is one-hot and
-    # this sum is a mux
-    q_ent = qh0 * s0 + qh1 * s1 + qh2 * s2 + qh3 * s3 + qh4 * s4 + qh5 * s5 +
-      qh6 * s6 + qh7 * s7
+    # this OR tree is a mux (3 levels; a sum would chain 7 carries)
+    q_ent =
+      bor(bor(bor(qh0 * s0, qh1 * s1), bor(qh2 * s2, qh3 * s3)),
+        bor(bor(qh4 * s4, qh5 * s5), bor(qh6 * s6, qh7 * s7)))
     q_eng = q_ent[30..27]
     q_slot = q_ent[26..22]
     q_serial = q_ent[21..0]
@@ -238,8 +239,9 @@ defmodule PicoBEAM.RTL.NameTable do
     qb6 = band(v6, n6 == q2_name)
     qb7 = band(v7, n7 == q2_name)
     q2_hit = bor(qb0, bor(qb1, bor(qb2, bor(qb3, bor(qb4, bor(qb5, bor(qb6, qb7)))))))
-    q2_ent = qb0 * s0 + qb1 * s1 + qb2 * s2 + qb3 * s3 + qb4 * s4 + qb5 * s5 +
-      qb6 * s6 + qb7 * s7
+    q2_ent =
+      bor(bor(bor(qb0 * s0, qb1 * s1), bor(qb2 * s2, qb3 * s3)),
+        bor(bor(qb4 * s4, qb5 * s5), bor(qb6 * s6, qb7 * s7)))
     q2_eng = q2_ent[30..27]
     q2_slot = q2_ent[26..22]
     q2_serial = q2_ent[21..0]
