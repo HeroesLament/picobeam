@@ -13,6 +13,13 @@
 //    the host port. host_echo's engine 0 sends its own pid to ring node
 //    15; the bench pops it, pushes 41 and 99 to that pid, and expects 42
 //    and 100 back. Prints __XC7_HOST_OK__.
+// -DHOT (+IMG=pb_shell_bytes.hex +LEN=<bytes> +SCRIPT=hot_script.hex,
+//    both from scripts/mk_hot_vectors.exs): the hot-load port and the
+//    shell's evaluator. Boots `priv/demo/pb_shell.ex`, then plays the
+//    script: code and pool writes into the RUNNING machine, eval
+//    messages to the evaluator, and the replies it must send back
+//    (a module load, two lines, an upgrade, a third line). Prints
+//    __XC7_HOT_OK__.
 // 4. run control: window 0 runs until stopped (done never sets), the
 //    CTRL1[5]/STATUS3[29] snapshot reads the running machine twice with
 //    the cycle count moving past the old window, and a stopped machine
@@ -190,7 +197,8 @@ module tb;
     integer t;
     begin
       hv = 0;
-      for (t = 0; t < 400 && !hv; t = t + 1) begin
+      // ~8 ms: a 1.5 KB image takes ~2.3 ms down the side door at 20 ns
+      for (t = 0; t < 4000 && !hv; t = t + 1) begin
         hpop;
         if (!hv) repeat (200) @(posedge fclk);
       end
@@ -212,6 +220,28 @@ module tb;
   endtask
 
   reg [35:0] epid;
+
+  // ---- hot load (CTRL2 op 0 with bit 29; STATUS3 bit 26)
+  reg hw_par = 0;
+
+  task hwr(input pool, input [8:0] a, input [71:0] d);
+    integer k;
+    begin
+      axw(32'h14, (32'd1 << 29) | (32'd0 << 26) | d[23:0]);
+      axw(32'h14, (32'd1 << 29) | (32'd1 << 26) | d[47:24]);
+      axw(32'h14, (32'd1 << 29) | (32'd2 << 26) | d[71:48]);
+      hw_par = ~hw_par;
+      axw(32'h14, (32'd1 << 29) | ((pool ? 32'd4 : 32'd3) << 26) | a);
+      axr(32'h28, rd);
+      for (k = 0; k < 1000 && rd[26] !== hw_par; k = k + 1) axr(32'h28, rd);
+      check(rd[26] === hw_par, "hot write acknowledged");
+    end
+  endtask
+
+  reg [91:0] script [0:4095];
+  reg [8*256-1:0] script_path;
+  integer si, nwr;
+  reg [3:0] sop; reg [15:0] sarg; reg [71:0] sdat;
 
   // one round trip: push n to `epid`, expect n + 1 back from it
   task hround(input [35:0] n);
@@ -236,7 +266,7 @@ module tb;
     repeat (8) @(posedge fclk);
 
     axr(32'h24, rd);
-    check(rd == 32'h0B5E0008, "design id");
+    check(rd == 32'h0B5E0009, "design id");
 
     // hold the core, release the MMCM, wait for lock
     axw(32'h10, 32'h0000_0002);
@@ -259,6 +289,50 @@ module tb;
     for (i = 0; i < plen; i = i + 1) axw(32'h14, (i & 32'h7FF) | (pimg[i] << 16));
     if (!$value$plusargs("WIN=%d", win)) win = `WIN;
     axw(32'h18, (win << 16) | plen);
+
+`ifdef HOT
+    $display("run Z: hot load and the shell evaluator");
+    for (i = 0; i < 4096; i = i + 1) script[i] = 92'd0;
+    if (!$value$plusargs("SCRIPT=%s", script_path)) script_path = "hot_script.hex";
+    $readmemh(script_path, script);
+    axw(32'h18, plen);                      // window 0: run until stopped
+    axw(32'h10, 32'h0000_0002);             // hold
+    repeat (40) @(posedge fclk);
+    ctl1 = 32'h0000_0004;
+    axw(32'h10, ctl1);                      // release + run
+    nwr = 0;
+    for (si = 0; si < 4096 && errors == 0 && script[si][91:88] != 0; si = si + 1) begin
+      sop = script[si][91:88]; sarg = script[si][87:72]; sdat = script[si][71:0];
+      case (sop)
+        1: begin hwr(1'b0, sarg[8:0], sdat); nwr = nwr + 1; end
+        2: begin hwr(1'b1, sarg[8:0], sdat); nwr = nwr + 1; end
+        3: hpush(1'b1, 4'd0, epid[31:28], sarg[6:0], epid);
+        4: hpush(1'b0, 4'd0, 4'd0, 7'd0, sdat[35:0]);
+        5: begin
+          hwait("a head arrived");
+          $display("  [%0d] head: deng=%0d len=%0d word=%09h (%0d writes before)", si, hd, hl, hw, nwr);
+          check(hh == 1 && hd == 15 && hl == sarg[6:0] && hw == sdat[35:0], "the expected head");
+        end
+        6: begin
+          hpop;
+          $display("  [%0d] flit: %09h (want %09h)", si, hw, sdat[35:0]);
+          check(hv == 1 && hh == 0 && hw == sdat[35:0], "the expected flit");
+        end
+        7: begin
+          hpop;
+          epid = hw;
+          $display("  [%0d] evaluator pid: %09h", si, hw);
+          check(hv == 1 && hh == 0 && hw[35:32] == 4'd5, "a pid");
+        end
+        default: check(1'b0, "script op");
+      endcase
+    end
+    hpop;
+    check(hv == 1'b0, "nothing else came out");
+    if (errors == 0) $display("__XC7_HOT_OK__");
+    else $display("__XC7_HOT_FAILED__ (%0d) at script line %0d", errors, si);
+    $finish;
+`endif
 
 `ifdef HOST
     $display("run H: host port, host_echo");

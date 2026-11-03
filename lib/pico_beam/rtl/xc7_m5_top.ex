@@ -38,7 +38,14 @@ defmodule PicoBEAM.RTL.Xc7M5Top do
                  to equal it, then read words 0x00C/0x00D
              [31:8] freq gate window, axi_clk cycles
       CTRL2  [31:30] selects what a write to CTRL2 does:
-             0  image byte: [10:0] address, [23:16] byte
+             0  [29] = 0: image byte: [10:0] address, [23:16] byte
+                [29] = 1: hot load, [28:26] the step (`PicoBEAM.Link`):
+                  0..2  data[23:0], [47:24], [71:48] from [23:0]
+                  3     write data[71:0] as code bundle [8:0] of
+                        both engines, and toggle the hot-load request
+                  4     write data[35:0] as pool word [7:0] of both
+                        engines, and toggle it
+                wait for STATUS3[26] to follow before staging again
              1  host-in flit, word[23:0] from [23:0]
              2  host-in flit, word[35:24] from [11:0], len from [18:12]
              3  host-in flit, head [0], kind [4:1], deng [8:5], and
@@ -51,9 +58,10 @@ defmodule PicoBEAM.RTL.Xc7M5Top do
       STATUS0 [15:0] DRP DO  [23:16] DRDY count  [30] DRP busy
               [31] MMCM locked
       STATUS1 [23:0] pb_clk cycles counted in the gate  [31] gate open
-      STATUS2 0x0B5E0008 (design id; 7 had no host port, 6 no snapshot)
-      STATUS3 [23:0] heartbeat  [27] host-out pop ack  [28] host-in
-              push ack  [29] snapshot ack  [30] locked
+      STATUS2 0x0B5E0009 (design id; 8 had no hot load, 7 no host port,
+              6 no snapshot)
+      STATUS3 [23:0] heartbeat  [26] hot-load ack  [27] host-out pop ack
+              [28] host-in push ack  [29] snapshot ack  [30] locked
               [31] run window done
 
   Memory window (AXI offset 0x10000 + 4 * word):
@@ -283,7 +291,21 @@ defmodule PicoBEAM.RTL.Xc7M5Top do
   wire :ho_d, 4, init: 0
   wire :ho_l, 7, init: 0
   wire :ho_w, 36, init: 0
-  wire :pad3, 3
+  # ---- hot load: staging on axi_clk, one write per toggle handshake
+  wire :hw_d0, 24, init: 0
+  wire :hw_d1, 24, init: 0
+  wire :hw_d2, 24, init: 0
+  wire :hw_a, 9, init: 0
+  wire :hw_pool, 1, init: 0
+  wire :hw_req, 1, init: 0
+  wire :hw_req_s, 1
+  wire :hw_ack, 1, init: 0
+  wire :hw_ack_s, 1
+  wire :hw_go, 1
+  wire :hot_ce, 1
+  wire :hot_pe, 1
+  wire :hot_data, 72
+  wire :pad2, 2
   wire :pad11, 11
   wire :pad10, 10
 
@@ -454,6 +476,18 @@ defmodule PicoBEAM.RTL.Xc7M5Top do
     data_in: :hout_ack,
     data_out: :hout_ack_s
 
+  instance :hw_sync, Hw.CDC.Sync2,
+    clk_dst: :pb_clk,
+    rst: :mm_zero,
+    data_in: :hw_req,
+    data_out: :hw_req_s
+
+  instance :hw_ack_sync, Hw.CDC.Sync2,
+    clk_dst: :axi_clk,
+    rst: :mm_zero,
+    data_in: :hw_ack,
+    data_out: :hw_ack_s
+
   instance :pb, PicoBEAM.RTL.M5Core,
     UDIV: @udiv,
     clk_12: :pb_clk,
@@ -497,7 +531,11 @@ defmodule PicoBEAM.RTL.Xc7M5Top do
     hout_word: :hout_word,
     hout_len: :hout_len,
     hout_pop: :hout_pop,
-    hout_depth: :hout_depth
+    hout_depth: :hout_depth,
+    hot_ce: :hot_ce,
+    hot_pe: :hot_pe,
+    hot_addr: :hw_a,
+    hot_data: :hot_data
 
   comb do
     rlast_tie = 1
@@ -508,12 +546,19 @@ defmodule PicoBEAM.RTL.Xc7M5Top do
     pad7 = 0
     req_a = ctrl1[5..5]
     hout_req_a = ctrl1[6..6]
-    pad3 = 0
+    pad2 = 0
     pad11 = 0
     pad10 = 0
     hin_word = {hs_hi, hs_lo}
     hin_go = band(hin_req_s != hin_ack, hin_ready)
     hout_pop = band(hout_req_s != hout_ack, hout_valid)
+    # the staged address and data are axi_clk registers, stable from
+    # before the toggle until the ack is back (the host waits for it),
+    # so the one-cycle write reads them directly
+    hw_go = hw_req_s != hw_ack
+    hot_ce = band(hw_go, bnot(hw_pool))
+    hot_pe = band(hw_go, hw_pool)
+    hot_data = {hw_d2, hw_d1, hw_d0}
     forever = ctrl3[31..16] == 0
     zero10 = 0
     awaddr_low = awaddr[16..0]
@@ -532,8 +577,8 @@ defmodule PicoBEAM.RTL.Xc7M5Top do
 
     status0 = {mm_locked, drp_busy, pad6, drp_cnt, drp_do_q}
     status1 = {gate, pad7, mcount}
-    status2 = 0x0B5E0008
-    status3 = {done_s, locked_s, ack_s, hin_ack_s, hout_ack_s, pad3, heartbeat}
+    status2 = 0x0B5E0009
+    status3 = {done_s, locked_s, ack_s, hin_ack_s, hout_ack_s, hw_ack_s, pad2, heartbeat}
 
     img_rd = img[bi[10..0]]
     ob0_rd = ob0[mem_raddr[8..0]]
@@ -591,8 +636,28 @@ defmodule PicoBEAM.RTL.Xc7M5Top do
   on :axi_clk do
     img_wr_q = ctrl2_wr
 
-    if band(img_wr_q, ctrl2[31..30] == 0) == 1 do
+    if band(img_wr_q, band(ctrl2[31..30] == 0, ctrl2[29..29] == 0)) == 1 do
       img[ctrl2[10..0]] = ctrl2[23..16]
+    end
+
+    # hot load: three data stages, then a commit that names the target
+    # and toggles the request
+    if band(img_wr_q, band(ctrl2[31..30] == 0, ctrl2[29..29] == 1)) == 1 do
+      if ctrl2[28..26] == 0, do: hw_d0 = ctrl2[23..0]
+      if ctrl2[28..26] == 1, do: hw_d1 = ctrl2[23..0]
+      if ctrl2[28..26] == 2, do: hw_d2 = ctrl2[23..0]
+
+      if ctrl2[28..26] == 3 do
+        hw_a = ctrl2[8..0]
+        hw_pool = 0
+        hw_req = bnot(hw_req)
+      end
+
+      if ctrl2[28..26] == 4 do
+        hw_a = ctrl2[8..0]
+        hw_pool = 1
+        hw_req = bnot(hw_req)
+      end
     end
 
     # host-in staging: the flit is complete, and stable, before the push
@@ -829,6 +894,12 @@ defmodule PicoBEAM.RTL.Xc7M5Top do
       s_e1b = e1b
       s_e1c = e1c
       s_q = {pad10, hin_depth, pad10, hout_depth}
+    end
+
+    # hot load: one write per toggle (the write itself is `hot_ce` /
+    # `hot_pe`, high for exactly this cycle)
+    if hw_go == 1 do
+      hw_ack = hw_req_s
     end
 
     # host-in: one push per toggle, when the queue has room

@@ -47,6 +47,11 @@ defmodule PicoBEAM.RTL.M5CoreSim do
     hin_word: 0,
     hin_len: 0,
     hout_pop: 0,
+    # no hot-load port either
+    hot_ce: 0,
+    hot_pe: 0,
+    hot_addr: 0,
+    hot_data: 0,
     PWRWAIT: 64,
     HALF: 2,
     UDIV: 8,

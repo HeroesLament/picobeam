@@ -89,6 +89,71 @@ defmodule PicoBEAM.Ex do
     end
   end
 
+  @doc """
+  Compile every module in `source` for the hot-loading link model
+  (`PicoBEAM.Link`): `[%{module:, program:, exports:}]`, one per module,
+  in the order Elixir defined them.
+
+  `remote: true` is passed through to `Erl.translate_core/4`, so calls
+  to other modules (and fully qualified calls to the same one) come out
+  against `:"Mod:f/A"` names for the linker to resolve. `exports` are
+  the `{f, a}` pairs the module exports, `__info__/1` and
+  `module_info/0,1` left out.
+
+  The BEAM modules Elixir compiles along the way are purged again: the
+  host only wanted their debug info, and a shell that redefines a module
+  would otherwise warn about it on every redefinition.
+  """
+  def compile_modules(source, opts \\ []) do
+    dir = Path.join(System.tmp_dir!(), "pico_beam_ex_#{:erlang.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    path = Path.join(dir, "pb_source.ex")
+    File.write!(path, source)
+    opts = Keyword.put_new(opts, :remote, true)
+
+    # Elixir really defines these modules on the host while it compiles
+    # them, and they are purged afterwards. A name already loaded here is
+    # a host module (`Enum`, a controller module), and compiling over it
+    # would replace it and then delete it: refuse.
+    for mod <- defined_modules(source), :code.is_loaded(mod) != false do
+      raise CompileError,
+        message: "#{inspect(mod)} is a module on the host; pick another name"
+    end
+
+    try do
+      mods = compile_to_beams(path)
+
+      try do
+        Enum.map(mods, fn {mod, bin} ->
+          {program, exports} = to_program_and_exports({mod, bin}, opts)
+          %{module: mod, program: program, exports: exports}
+        end)
+      after
+        for {mod, _} <- mods do
+          :code.purge(mod)
+          :code.delete(mod)
+        end
+      end
+    after
+      File.rm_rf(dir)
+    end
+  end
+
+  defp defined_modules(source) do
+    {_ast, acc} =
+      source
+      |> Code.string_to_quoted!()
+      |> Macro.prewalk([], fn
+        {:defmodule, _, [{:__aliases__, _, parts} | _]} = node, acc ->
+          {node, [Module.concat(parts) | acc]}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    acc
+  end
+
   # ---------------------------------------------------------------------------
 
   defp compile_to_beams(path) do
@@ -133,7 +198,9 @@ defmodule PicoBEAM.Ex do
       )
   end
 
-  defp to_program({mod, bin}) do
+  defp to_program({mod, bin}), do: {mod, bin} |> to_program_and_exports([]) |> elem(0)
+
+  defp to_program_and_exports({mod, bin}, opts) do
     {:ok, {^mod, [debug_info: {:debug_info_v1, backend, data}]}} =
       :beam_lib.chunks(bin, [:debug_info])
 
@@ -143,10 +210,21 @@ defmodule PicoBEAM.Ex do
         {:error, reason} -> raise CompileError, message: "debug_info: #{inspect(reason)}"
       end
 
-    case :compile.forms(forms, [:to_core, :binary, :return_errors, :nowarn_unused_vars]) do
-      {:ok, m, core} -> Erl.translate_core(core, m, @skip)
-      {:ok, m, core, _warnings} -> Erl.translate_core(core, m, @skip)
-      {:error, errors, _warnings} -> raise CompileError, message: "to_core: #{inspect(errors)}"
-    end
+    core =
+      case :compile.forms(forms, [:to_core, :binary, :return_errors, :nowarn_unused_vars]) do
+        {:ok, _m, core} -> core
+        {:ok, _m, core, _warnings} -> core
+        {:error, errors, _warnings} -> raise CompileError, message: "to_core: #{inspect(errors)}"
+      end
+
+    {:c_module, _, _name, exports, _attrs, _defs} = core
+
+    exports =
+      for {:c_var, _, {f, a}} <- exports,
+          f != :module_info,
+          {f, a} not in @skip,
+          do: {f, a}
+
+    {Erl.translate_core(core, mod, @skip, opts), exports}
   end
 end

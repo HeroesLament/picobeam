@@ -415,7 +415,29 @@ defmodule PicoBEAM.Erl do
   `skip` names functions to leave out — Elixir's `__info__/1` is
   reflection over maps and keyword lists, and this machine has neither.
   """
-  def translate_core(core, mod, skip \\ []), do: translate(core, mod, skip)
+  def translate_core(core, mod, skip \\ [], opts \\ []) do
+    # `remote: true` is the hot-loading link model (`PicoBEAM.Link`): a
+    # call to ANOTHER module, and a fully qualified call to this one, is
+    # emitted against the external name `:"Mod:f/A"` instead of being
+    # refused or folded into a local call. The linker resolves it to that
+    # function's export trampoline, so it always reaches the current
+    # version (Erlang's rule: local calls stay, remote calls go current).
+    # Without it, nothing changes: one module, one flat image.
+    #
+    # A process flag rather than a field threaded through every
+    # `compile_fun` and `lift_and_compile` call: the flag is read once
+    # per function, when its state is made, and cleared on the way out.
+    previous = Process.put(:pico_beam_erl_remote, Keyword.get(opts, :remote, false))
+
+    try do
+      translate(core, mod, skip)
+    after
+      Process.put(:pico_beam_erl_remote, previous)
+    end
+  end
+
+  @doc "The external name of `Mod:f/A`, as `remote: true` code calls it."
+  def remote_name(mod, f, a), do: :"#{mod}:#{f}/#{a}"
 
   defp translate({:c_module, _, _name, _exports, _attrs, defs}, mod, skip \\ []) do
     funs =
@@ -462,6 +484,7 @@ defmodule PicoBEAM.Erl do
       out: [],
       lbl: 0,
       mod: mod,
+      remote: Process.get(:pico_beam_erl_remote, false) == true,
       fun: {f, a},
       letrecs: %{},
       peek_reg: nil,
@@ -1107,6 +1130,30 @@ defmodule PicoBEAM.Erl do
     end)
   end
 
+  defp remote_call(mod, f, args, st, mode) do
+    a = length(args)
+    target = remote_name(mod, f, a)
+
+    held(st, fn st ->
+      {regs, st} =
+        Enum.reduce(args, {[], st}, fn arg, {acc, st} ->
+          {r, st} = expr(arg, st, :value)
+          {[r | acc], st}
+        end)
+
+      st = stage(st, Enum.reverse(regs))
+
+      case mode do
+        :tail ->
+          {:noreturn, emit(st, {:tailcall, target, a})}
+
+        :value ->
+          {rd, st} = new_reg(st)
+          {rd, emit(st, {:call, rd, target, a})}
+      end
+    end)
+  end
+
   defp expr({:c_apply, _, _op, _args}, st, _mode), do: unsupported(st, "apply of non-name")
 
   defp expr({:c_call, _, {:c_literal, _, mod}, {:c_literal, _, f}, args} = node, st, mode) do
@@ -1116,7 +1163,12 @@ defmodule PicoBEAM.Erl do
       # erlang BIFs; Elixir does not inline them, so the front end does
       mod == Process and f in [:register, :whereis, :unregister] ->
         held(st, fn st -> builtin(f, args, st, mode, node) end)
-      mod == st.mod -> expr({:c_apply, [], {:c_var, [], {f, length(args)}}, args}, st, mode)
+      # hot-loading link model: a fully qualified call to this module
+      # goes through its trampoline too (below), which is what lets a
+      # running `loop/1` pick up a new version at its next
+      # `Mod.loop(state)`. Inside the prelude it stays local.
+      mod == st.mod and (not st.remote or in_prelude?(st)) ->
+        expr({:c_apply, [], {:c_var, [], {f, length(args)}}, args}, st, mode)
       # `lists:` resolves against the prelude, and the function is lifted
       # into this image under a mangled name the same way a comprehension
       # is. Only what is CALLED gets compiled.
@@ -1131,6 +1183,8 @@ defmodule PicoBEAM.Erl do
 
       mod == :binary and is_map_key(@binary_prelude, {f, length(args)}) ->
         prelude_call(Map.fetch!(@binary_prelude, {f, length(args)}), args, st, mode)
+
+      st.remote and not in_prelude?(st) -> remote_call(mod, f, args, st, mode)
 
       true -> unsupported(st, "remote call #{mod}:#{f}/#{length(args)}")
     end
@@ -2133,8 +2187,18 @@ defmodule PicoBEAM.Erl do
     finish({rd, emit(st, {:self, rd})}, mode)
   end
 
-  defp builtin(:spawn, [_mod, {:c_literal, _, f}, args_list], st, mode, _node) do
+  defp builtin(:spawn, [mod, {:c_literal, _, f}, args_list], st, mode, _node) do
     args = syntactic_list(args_list, st)
+
+    # remote: the spawn goes through the target's trampoline, like a call
+    target =
+      case mod do
+        {:c_literal, _, m} when is_atom(m) and m != :pb_prelude ->
+          if st.remote, do: remote_name(m, f, length(args)), else: fname(f, length(args))
+
+        _ ->
+          fname(f, length(args))
+      end
 
     {regs, st} =
       Enum.reduce(args, {[], st}, fn arg, {acc, st} ->
@@ -2144,7 +2208,7 @@ defmodule PicoBEAM.Erl do
 
     st = stage(st, regs)
     {rd, st} = new_reg(st)
-    finish({rd, emit(st, {:spawn, rd, fname(f, length(args)), length(args)})}, mode)
+    finish({rd, emit(st, {:spawn, rd, target, length(args)})}, mode)
   end
 
   # `spawn_link/3` is the OTP idiom for starting a child, and it is

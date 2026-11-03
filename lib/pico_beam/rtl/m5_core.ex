@@ -138,6 +138,15 @@ defmodule PicoBEAM.RTL.M5Core do
   output :hout_word, 36
   output :hout_len, 7
   input :hout_pop, 1
+  # ---- hot load (`Xc7M5Top` CTRL2 op 0, bit 29): one code bundle or one
+  # pool word into BOTH engines while they run. `PicoBEAM.Link` decides
+  # what to write; the write port is the boot loaders' side door, which
+  # is idle once an image is running. Board tops without a host tie
+  # these to 0.
+  input :hot_ce, 1
+  input :hot_pe, 1
+  input :hot_addr, 9
+  input :hot_data, 72
   output :hout_depth, 6
 
   # ---- the loader
@@ -396,12 +405,22 @@ defmodule PicoBEAM.RTL.M5Core do
     # the two loaders share the side door. They cannot both be talking:
     # the card is finished before the wire can start, and the wire holds
     # `bst` at 0 while it works.
-    ld_ce = bor(sd_ce, ul_ce)
-    ld_ca = ul_ce * ul_ca + band(bnot(ul_ce), 1) * sd_ca
-    ld_cd = ul_ce * ul_cd + band(bnot(ul_ce), 1) * sd_cd
-    ld_pe = bor(sd_pe, ul_pe)
-    ld_pa = ul_pe * ul_pa + band(bnot(ul_pe), 1) * sd_pa
-    ld_pd = ul_pe * ul_pd + band(bnot(ul_pe), 1) * sd_pd
+    # The hot-load port takes the side door over either of them; the host
+    # only writes while an image is running, when neither is talking.
+    ld_ce = bor(hot_ce, bor(sd_ce, ul_ce))
+    ld_ca =
+      hot_ce * hot_addr +
+        band(bnot(hot_ce), 1) * (ul_ce * ul_ca + band(bnot(ul_ce), 1) * sd_ca)
+    ld_cd =
+      hot_ce * hot_data +
+        band(bnot(hot_ce), 1) * (ul_ce * ul_cd + band(bnot(ul_ce), 1) * sd_cd)
+    ld_pe = bor(hot_pe, bor(sd_pe, ul_pe))
+    ld_pa =
+      hot_pe * hot_addr[7..0] +
+        band(bnot(hot_pe), 1) * (ul_pe * ul_pa + band(bnot(ul_pe), 1) * sd_pa)
+    ld_pd =
+      hot_pe * hot_data[35..0] +
+        band(bnot(hot_pe), 1) * (ul_pe * ul_pd + band(bnot(ul_pe), 1) * sd_pd)
 
     ent0 = from_uart * ul_e0 + band(bnot(from_uart), 1) * sd_e0
     ent1 = from_uart * ul_e1 + band(bnot(from_uart), 1) * sd_e1
