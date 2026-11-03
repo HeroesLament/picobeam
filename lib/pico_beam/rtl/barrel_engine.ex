@@ -1461,6 +1461,15 @@ defmodule PicoBEAM.RTL.BarrelEngine do
   wire :rg_last, 1
   wire :wake_en, 1
   wire :wake_slot, 5
+  # the wake channel, one cycle after its source: a local send's
+  # `delivered` is the end of the X-stage send path (CAM, ProcTable
+  # check, SendUnit), and the wake used to ride straight on into the
+  # target seat's status in the same cycle. Every source shifts
+  # together, so the sources stay exclusive by the mailbox port's
+  # arbitration exactly as before, one cycle later.
+  wire :wake_en_r, 1, init: 0
+  wire :wake_slot_r, 5, init: 0
+  wire :wake_queued_r, 1, init: 0
   wire :wk_pend, 1, init: 0
   wire :wk_slot, 5, init: 0
   wire :pt_free, 1
@@ -2217,8 +2226,8 @@ defmodule PicoBEAM.RTL.BarrelEngine do
     tm_pc = c0_rwaitt * imm0[8..0] + c1_rwaitt * imm1[8..0] + c2_rwaitt * imm2[8..0]
 
     # a message that lands cancels the deadline it beat
-    tm_cancel = wake_en
-    tm_cancel_slot = wake_slot
+    tm_cancel = wake_en_r
+    tm_cancel_slot = wake_slot_r
 
     # a timeout, like a delivery, wakes a resident in place or requeues
     # an evicted process — and unlike a delivery it redirects the pc
@@ -2287,10 +2296,10 @@ defmodule PicoBEAM.RTL.BarrelEngine do
           bor(band(rg_last, pt_rd5_state == 3),
             band(ser_wake, pt_rd6_state == 3))))
 
-    wk0 = band(wake_en, band(slot0 == wake_slot, dbg_st0 == 12))
-    wk1 = band(wake_en, band(slot1 == wake_slot, dbg_st1 == 12))
-    wk2 = band(wake_en, band(slot2 == wake_slot, dbg_st2 == 12))
-    wk3 = band(wake_en, band(slot3 == wake_slot, dbg_st3 == 12))
+    wk0 = band(wake_en_r, band(slot0 == wake_slot_r, dbg_st0 == 12))
+    wk1 = band(wake_en_r, band(slot1 == wake_slot_r, dbg_st1 == 12))
+    wk2 = band(wake_en_r, band(slot2 == wake_slot_r, dbg_st2 == 12))
+    wk3 = band(wake_en_r, band(slot3 == wake_slot_r, dbg_st3 == 12))
     unblock_en = bor(bor(wk0, bor(wk1, bor(wk2, wk3))), tm_resident)
     unblock_seat =
       band(bnot(tm_resident), 1) * (wk1 * 1 + wk2 * 2 + wk3 * 3) +
@@ -3129,6 +3138,8 @@ defmodule PicoBEAM.RTL.BarrelEngine do
       evicts = 0
       dm_pend = 0
       wk_pend = 0
+      wake_en_r = 0
+      wake_queued_r = 0
       tp_pend = 0
       lk_pend = 0
       # the sup transport (notes/53 phase 4): the egress latch is a
@@ -4296,9 +4307,13 @@ defmodule PicoBEAM.RTL.BarrelEngine do
         evicts = evicts + 1
       end
 
-      if wake_queued == 1 do
+      wake_en_r = wake_en
+      wake_slot_r = wake_slot
+      wake_queued_r = wake_queued
+
+      if wake_queued_r == 1 do
         wk_pend = 1
-        wk_slot = wake_slot
+        wk_slot = wake_slot_r
         wk_jump = 0
       end
 

@@ -9,6 +9,18 @@ defmodule PicoBEAM.RTL.BarrelSeq do
       F stage: ctx0   ctx1   ctx2   ctx3   ctx0
       D stage:  —     ctx0   ctx1   ctx2   ctx3
       X stage:  —      —     ctx0   ctx1   ctx2
+      W stage:  —      —      —     ctx0   ctx1
+
+  W writes the X decision (status, pc, target, pended wb2 op) from the X
+  bundle's classification, registered at the end of X. T = 4 covers four
+  stages (`notes/08` Q2): ctx0's W at t+3 lands before its F at t+4, and
+  no F, D or X slot reads ctx0 at t+3. Everything else that reads the
+  status in the W cycle (`dbg_st*`, which the engine's wake, timer and
+  kill logic use, and the collector's resume) reads `cs_e*`, the status
+  with the pending W write applied, so the per-cycle status the rest of
+  the machine sees is unchanged. An event that hit the X seat in the X
+  cycle (kill, arity, vacate, reseat) beat the X decision before and
+  still does: `w_nocs`/`w_nopc` drop the W write it overrode.
 
   `seat` is a free-running 2-bit counter (Q9: fixed rotation, always;
   1/T is a promise about SLOTS, not progress). A context's bundle
@@ -359,7 +371,68 @@ defmodule PicoBEAM.RTL.BarrelSeq do
   wire :peek_claim, 1
   wire :take_claim, 1
   wire :send_claim, 1
-  wire :park_long, 1
+
+  # W stage: the X bundle's classification, one cycle late
+  wire :w_v, 1, init: 0
+  wire :w_k, 2, init: 0
+  wire :w_pc, 9, init: 0
+  wire :w_tgt, 9, init: 0
+  wire :w_cpc, 9, init: 0
+  wire :w_gc, 1, init: 0
+  wire :w_flt, 1, init: 0
+  wire :w_cgo, 1, init: 0
+  wire :w_cdeep, 1, init: 0
+  wire :w_wb2, 1, init: 0
+  wire :w_call, 1, init: 0
+  wire :w_cfun, 1, init: 0
+  wire :w_ret, 1, init: 0
+  wire :w_halt, 1, init: 0
+  wire :w_jump, 1, init: 0
+  wire :w_rpeek, 1, init: 0
+  wire :w_rtl, 1, init: 0
+  wire :w_sl, 1, init: 0
+  wire :w_sup, 1, init: 0
+  wire :w_rwb, 1, init: 0
+  wire :w_spawn, 1, init: 0
+  wire :w_nocs, 1, init: 0
+  wire :w_nopc, 1, init: 0
+
+  # the W decision (comb) and the forwarded status
+  wire :wf, 1
+  wire :wfc, 1
+  wire :wfn, 1
+  wire :wn, 1
+  wire :ww, 1
+  wire :wo, 1
+  wire :o_halt, 1
+  wire :r1, 1
+  wire :o_ret, 1
+  wire :r2, 1
+  wire :o_rpeek, 1
+  wire :r3, 1
+  wire :w_long, 1
+  wire :o_long, 1
+  wire :r4, 1
+  wire :o_rwait, 1
+  wire :r5, 1
+  wire :o_spawn, 1
+  wire :r6, 1
+  wire :o_cfun, 1
+  wire :r7, 1
+  wire :o_call, 1
+  wire :o_step, 1
+  wire :ww_step, 1
+  wire :w_cs, 5
+  wire :w_cs_wr, 1
+  wire :w_pc_wr, 1
+  wire :w_pc_val, 9
+  wire :w_tgt_wr, 1
+  wire :w_pend_wr, 1
+  wire :w_cs_hit, 1
+  wire :cs_e0, 5
+  wire :cs_e1, 5
+  wire :cs_e2, 5
+  wire :cs_e3, 5
 
   comb do
     f_seat = seat
@@ -428,15 +501,66 @@ defmodule PicoBEAM.RTL.BarrelSeq do
 
     # the serialiser is claimed at the sending context's own F slot, the
     # way every shared unit in this machine is
-    # a compound take and a compound send both park, in different
-    # states; rule 3 says a bundle holds at most one system op, so they
-    # are mutually exclusive and this is a one-hot mux, not a priority
-    park_long = bor(is_rtake_long, bor(is_send_long, is_sup_rem))
+    # ---- the W decision, made once for the context in W ----
+    # Same priority as the per-seat tree it replaces: gc park, then a
+    # fault (caught or not), then a wb2 bundle, then the bundle's own op
+    # in the order halt, ret, rpeek, long park, rwait, spawn, cfun, call,
+    # and otherwise a step (jump or pc + 1). Each selector is that
+    # priority made explicit, so at most one is high and the ORs are
+    # muxes. A compound take, a compound send and a remote sup op park in
+    # different states; rule 3 says a bundle holds at most one system op,
+    # so `w_long` is a one-hot mux, not a priority.
+    wf = band(bnot(w_gc), w_flt)
+    wfc = band(wf, w_cgo)
+    wfn = band(wf, bnot(w_cgo))
+    wn = band(bnot(w_gc), bnot(w_flt))
+    ww = band(wn, w_wb2)
+    wo = band(wn, bnot(w_wb2))
+    o_halt = band(wo, w_halt)
+    r1 = band(wo, bnot(w_halt))
+    o_ret = band(r1, w_ret)
+    r2 = band(r1, bnot(w_ret))
+    o_rpeek = band(r2, w_rpeek)
+    r3 = band(r2, bnot(w_rpeek))
+    w_long = bor(w_rtl, bor(w_sl, w_sup))
+    o_long = band(r3, w_long)
+    r4 = band(r3, bnot(w_long))
+    o_rwait = band(r4, w_rwb)
+    r5 = band(r4, bnot(w_rwb))
+    o_spawn = band(r5, w_spawn)
+    r6 = band(r5, bnot(w_spawn))
+    o_cfun = band(r6, w_cfun)
+    r7 = band(r6, bnot(w_cfun))
+    o_call = band(r7, w_call)
+    o_step = band(r7, bnot(w_call))
+    ww_step = band(ww, band(bnot(w_call), band(bnot(w_ret), bnot(w_halt))))
+
+    w_cs_wr = bnot(o_step)
+
+    w_cs =
+      bor(bor(bor(w_gc * 17, wfc * bor(w_cdeep * 3, bnot(w_cdeep) * 20)), bor(wfn * 7, ww * 5)),
+        bor(bor(bor(o_halt * 6, o_ret * 3), bor(o_rpeek * 10, o_long * bor(w_rtl * 14, bor(w_sl * 15, w_sup * 18)))),
+          bor(bor(o_rwait * 12, o_spawn * 9), bor(o_cfun * 2, o_call * 2))))
+
+    w_pc_wr = bor(wfc, bor(ww_step, o_step))
+    w_pc_val = bor(wfc * w_cpc, bnot(wfc) * bor(w_jump * w_tgt, bnot(w_jump) * (w_pc + 1)))
+    w_tgt_wr = bor(band(ww, w_call), bor(o_rpeek, bor(o_spawn, o_call)))
+    w_pend_wr = ww
+
+    # the status as the rest of the machine sees it this cycle
+    w_cs_hit = band(w_v, band(w_cs_wr, bnot(w_nocs)))
+    cs_e0 = band(w_cs_hit, w_k == 0) * w_cs + bnot(band(w_cs_hit, w_k == 0)) * cstate0
+    cs_e1 = band(w_cs_hit, w_k == 1) * w_cs + bnot(band(w_cs_hit, w_k == 1)) * cstate1
+    cs_e2 = band(w_cs_hit, w_k == 2) * w_cs + bnot(band(w_cs_hit, w_k == 2)) * cstate2
+    cs_e3 = band(w_cs_hit, w_k == 3) * w_cs + bnot(band(w_cs_hit, w_k == 3)) * cstate3
 
     send_claim = band(cur_state == 15, ser_free)
     send_go = send_claim
     send_seat = seat
-    f_blocked = cur_state == 12
+    # a seat being woken this cycle is not blocked: the wake channel is a
+    # cycle behind the delivery, and an eviction started in that cycle
+    # would park a process whose message has already landed
+    f_blocked = band(cur_state == 12, bnot(band(unblock_en, unblock_seat == seat)))
 
     # fill stream pacing: advance at the owner's D slot, present 0..15,
     # one gap index (16) for the last delayed write, dest at 17
@@ -463,10 +587,10 @@ defmodule PicoBEAM.RTL.BarrelSeq do
     died_seat = sfl * sfl_seat + bnot(sfl) * x_seat_r
     died_fault = bor(sfl, band(x_en_r, x_fault))
 
-    dbg_st0 = cstate0
-    dbg_st1 = cstate1
-    dbg_st2 = cstate2
-    dbg_st3 = cstate3
+    dbg_st0 = cs_e0
+    dbg_st1 = cs_e1
+    dbg_st2 = cs_e2
+    dbg_st3 = cs_e3
   end
 
   on :clk do
@@ -492,6 +616,7 @@ defmodule PicoBEAM.RTL.BarrelSeq do
       fill_owner = 0
       fill_i = 0
       sfl = 0
+      w_v = 0
     else
       sfl = 0
 
@@ -501,6 +626,36 @@ defmodule PicoBEAM.RTL.BarrelSeq do
       d_en_r = f_en
       x_seat_r = d_seat_r
       x_en_r = d_en_r
+
+      # X -> W: the classification, and whether an event that wins over
+      # the X decision hit this seat in the X cycle
+      w_v = x_en_r
+      w_k = x_seat_r
+      w_pc = x_pc
+      w_tgt = pc_target
+      w_cpc = catch_pc
+      w_gc = gc_park
+      w_flt = fault_in
+      w_cgo = catch_go
+      w_cdeep = catch_deep
+      w_wb2 = has_wb2
+      w_call = is_call
+      w_cfun = is_cfun
+      w_ret = is_ret
+      w_halt = is_halt
+      w_jump = is_jump
+      w_rpeek = is_rpeek
+      w_rtl = is_rtake_long
+      w_sl = is_send_long
+      w_sup = is_sup_rem
+      w_rwb = is_rwait_blk
+      w_spawn = is_spawn
+
+      w_nocs =
+        bor(bor(band(kill_en, kill_seat == x_seat_r), band(bad_en, bad_seat == x_seat_r)),
+          bor(band(seat_clr, seat_idx == x_seat_r), band(seat_wr, seat_idx == x_seat_r)))
+
+      w_nopc = band(seat_wr, seat_idx == x_seat_r)
 
       # shared fill stream (single write site; claim wins over advance)
       if claim_ret == 1 do
@@ -520,99 +675,26 @@ defmodule PicoBEAM.RTL.BarrelSeq do
       # ---- per-context blocks: one copy per seat (`generate`) ----
       generate k <- 0..3 do
         # ---- ctx k ----
-        if band(x_en_r, x_seat_r == k) == 1 do
-          # `notes/40` — a heap that has run out is a REQUEST, not a
-          # fault. The bundle parks here with its pc untouched, so the
-          # collection is followed by the SAME bundle running again
-          # against a compacted heap. Nothing of the allocation has to
-          # be latched and carried across the pause, because nothing
-          # of it happened: the store refuses the bump on `heap_full`.
-          if gc_park == 1 do
-            cstate[[k]] = 17
-          else
-          if fault_in == 1 do
-            # a live catch turns the fault into a landing instead of a
-            # death: state 3 (the ret path, with an absolute pop) when the
-            # frames have to be unwound first, state 20 when they do not
-            if catch_go == 1 do
-              pc[[k]] = catch_pc
-
-              if catch_deep == 1 do
-                cstate[[k]] = 3
-              else
-                cstate[[k]] = 20
-              end
-            else
-              cstate[[k]] = 7
-            end
-          else
-            if has_wb2 == 1 do
-              pc_c[[k]] = is_call
-              pc_r[[k]] = is_ret
-              pc_h[[k]] = is_halt
-
-              if is_call == 1 do
-                tgt[[k]] = pc_target
-              end
-
-              if band(bnot(is_call), band(bnot(is_ret), bnot(is_halt))) == 1 do
-                if is_jump == 1 do
-                  pc[[k]] = pc_target
-                else
-                  pc[[k]] = pc[[k]] + 1
-                end
-              end
-
-              cstate[[k]] = 5
-            else
-              if is_halt == 1 do
-                cstate[[k]] = 6
-              else
-                if is_ret == 1 do
-                  cstate[[k]] = 3
-                else
-                  if is_rpeek == 1 do
-                    # the none-label rides the same target latch a call uses
-                    tgt[[k]] = pc_target
-                    cstate[[k]] = 10
-                  else
-                  if park_long == 1 do
-                    cstate[[k]] = is_rtake_long * 14 + is_send_long * 15 + is_sup_rem * 18
-                  else
-                  if is_rwait_blk == 1 do
-                    cstate[[k]] = 12
-                  else
-                  if is_spawn == 1 do
-                    # the callee entry rides the SAME per-context target
-                    # latch a call uses; the commit is at a later F slot
-                    tgt[[k]] = pc_target
-                    cstate[[k]] = 9
-                  else
-                  if is_cfun == 1 do
-                    # a call whose target arrives a cycle later, through
-                    # `ftgt_*`. The park is the ordinary call park; only
-                    # the source of `tgt` differs (`notes/42`).
-                    cstate[[k]] = 2
-                  else
-                  if is_call == 1 do
-                    cstate[[k]] = 2
-                    tgt[[k]] = pc_target
-                  else
-                    if is_jump == 1 do
-                      pc[[k]] = pc_target
-                    else
-                      pc[[k]] = pc[[k]] + 1
-                    end
-                  end
-                  end
-                  end
-                  end
-                  end
-                end
-                end
-              end
-            end
+        # the W stage lands ctx k's X decision (one cycle after X; `notes/40`
+        # gc park leaves the pc untouched, a caught fault lands on the
+        # handler, a wb2 bundle pends its control op for the wb2 turn)
+        if band(w_v, w_k == k) == 1 do
+          if band(w_cs_wr, bnot(w_nocs)) == 1 do
+            cstate[[k]] = w_cs
           end
+
+          if band(w_pc_wr, bnot(w_nopc)) == 1 do
+            pc[[k]] = w_pc_val
+          end
+
+          if w_tgt_wr == 1 do
+            tgt[[k]] = w_tgt
+          end
+
+          if w_pend_wr == 1 do
+            pc_c[[k]] = w_call
+            pc_r[[k]] = w_ret
+            pc_h[[k]] = w_halt
           end
         end
 
@@ -721,7 +803,7 @@ defmodule PicoBEAM.RTL.BarrelSeq do
         # was never advanced, so this is a resume that repeats rather
         # than one that continues — the only park in the machine that
         # does.
-        if band(band(gc_res4 >>> k, 1), cstate[[k]] == 17) == 1 do
+        if band(band(gc_res4 >>> k, 1), cs_e[[k]] == 17) == 1 do
           cstate[[k]] = 1
         end
 
