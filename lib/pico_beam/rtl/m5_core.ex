@@ -108,6 +108,19 @@ defmodule PicoBEAM.RTL.M5Core do
   output :obs_pc0, 9
   output :obs_pc1, 9
   output :obs_flags, 4
+  # live status for the host's snapshot (`Xc7M5Top`, STATUS3[29]), per
+  # engine: a {fault reason, fault slot, 0:3, fault count, swaps},
+  # b {spawns, deaths, occupancy, idle, faulted},
+  # c {run-queue count, x seat, x enable, x pc, 0:14};
+  # global {vm halt, idle both, fault any, from uart, sd write nibble,
+  # last out word, 0:8}
+  output :obs_e0a, 32
+  output :obs_e0b, 32
+  output :obs_e0c, 32
+  output :obs_e1a, 32
+  output :obs_e1b, 32
+  output :obs_e1c, 32
+  output :obs_g, 32
 
   # ---- the loader
   wire :sd_busy, 1
@@ -299,6 +312,9 @@ defmodule PicoBEAM.RTL.M5Core do
   # off the wire — one nibble on the debug line, which is where you look
   # when you have just pushed something
   wire :wr_nib, 4
+  wire :z3, 3
+  wire :z8, 8
+  wire :z14, 14
 
   comb do
     sd_d1 = 1
@@ -362,6 +378,17 @@ defmodule PicoBEAM.RTL.M5Core do
     obs_pc0 = pc0
     obs_pc1 = pc1
     obs_flags = vm_halt * 8 + fault_any * 4 + idle_both * 2 + from_uart
+
+    z3 = 0
+    z8 = 0
+    z14 = 0
+    obs_e0a = {fr0, fs0, z3, fc0, sw0}
+    obs_e0b = {sp0, dt0, occ0, idle0, flt0}
+    obs_e0c = {qc0, xs0, xe0, pc0, z14}
+    obs_e1a = {fr1, fs1, z3, fc1, sw1}
+    obs_e1b = {sp1, dt1, occ1, idle1, flt1}
+    obs_e1c = {qc1, xs1, xe1, pc1, z14}
+    obs_g = {vm_halt, idle_both, fault_any, from_uart, wr_nib, out_l, z8}
   end
 
   on :clk_12 do

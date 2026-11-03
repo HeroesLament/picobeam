@@ -9,6 +9,10 @@
 //    engine 0's first `out` is the push image's 0xAB
 // 3. the same run again, with the pb_clk period changed: the signature
 //    must not move. That is the property the Fmax sweep stands on.
+// 4. run control: window 0 runs until stopped (done never sets), the
+//    CTRL1[5]/STATUS3[29] snapshot reads the running machine twice with
+//    the cycle count moving past the old window, and a stopped machine
+//    snapshots as reset (0 cycles).
 //
 // Prints __XC7_OK__ on full success.
 
@@ -131,6 +135,28 @@ module tb;
     end
   endtask
 
+  // one snapshot: write CTRL1 (run bit, request bit), wait for the ack to
+  // match the request, read the cycle count and print the other words
+  task snap(input [31:0] ctl, output [31:0] c);
+    integer k;
+    begin
+      axw(32'h10, ctl);
+      axr(32'h28, rd);
+      for (k = 0; k < 1000 && rd[29] !== ctl[5]; k = k + 1) axr(32'h28, rd);
+      check(rd[29] === ctl[5], "snapshot acknowledged");
+      check(rd[31] == 1'b0, "window 0: done never sets");
+      axr(32'h10010, c);
+      axr(32'h10014, rd);
+      $display("  snap: cycles=%0d global=%08h", c, rd);
+      for (k = 0; k < 6; k = k + 1) begin
+        axr(32'h10018 + 4 * k, rd);
+        $display("  snap word %0d: %08h", 6 + k, rd);
+      end
+    end
+  endtask
+
+  reg [31:0] c1, c2, c3;
+
   initial begin
     for (i = 0; i < 2048; i = i + 1) pimg[i] = 8'h00;
     if (!$value$plusargs("IMG=%s", pimg_path)) pimg_path = `PUSH_IMG;
@@ -140,7 +166,7 @@ module tb;
     repeat (8) @(posedge fclk);
 
     axr(32'h24, rd);
-    check(rd == 32'h0B5E0006, "design id");
+    check(rd == 32'h0B5E0007, "design id");
 
     // hold the core, release the MMCM, wait for lock
     axw(32'h10, 32'h0000_0002);
@@ -175,6 +201,23 @@ module tb;
     run_once(sig2, rd);
     check(sig1 == sig2, "signature independent of pb_clk period");
     check(sig1 != 32'h0, "signature is not zero");
+
+    $display("run 3: window 0 (run until stopped), live snapshot");
+    axw(32'h18, plen);                      // window 0
+    axw(32'h10, 32'h0000_0002);             // hold, run low, request 0
+    repeat (40) @(posedge fclk);
+    axw(32'h10, 32'h0000_0004);             // release + run
+    repeat (4000) @(posedge fclk);
+    snap(32'h0000_0024, c1);                // run, request 1
+    check(c1 > 0, "the machine is running");
+    repeat (20000) @(posedge fclk);         // past the old 12 x 1024 window
+    snap(32'h0000_0004, c2);                // run, request 0
+    check(c2 > c1, "the cycle count moved between snapshots");
+    check(c2 > win * 1024, "it ran past the old window");
+    axw(32'h10, 32'h0000_0000);             // stop: run low
+    repeat (100) @(posedge fclk);
+    snap(32'h0000_0020, c3);                // stopped, request 1
+    check(c3 == 0, "a stopped machine snapshots as reset");
 
     if (errors == 0) $display("__XC7_OK__");
     else $display("__XC7_FAILED__ (%0d)", errors);

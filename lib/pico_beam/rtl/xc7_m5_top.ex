@@ -1,8 +1,8 @@
 defmodule PicoBEAM.RTL.Xc7M5Top do
   @moduledoc """
-  The two-engine machine on a Zynq-7020, as a timing benchmark: `M5Core`
-  clocked by an MMCM whose frequency the PS can rewrite, fed and watched
-  from AXI, with no package pins at all.
+  The two-engine machine on a Zynq-7020, as a timing benchmark and as a
+  machine left running: `M5Core` clocked by an MMCM whose frequency the
+  PS can rewrite, fed and watched from AXI, with no package pins at all.
 
       FCLK0 100 MHz ─▶ BUFG ─▶ axi_clk ─┬─▶ AXI4-Lite regs, DRP, image RAM
                                         └─▶ MMCME2_ADV ─▶ BUFG ─▶ pb_clk
@@ -29,30 +29,51 @@ defmodule PicoBEAM.RTL.Xc7M5Top do
       CTRL0  DRP command: [15:0] DI, [22:16] DADDR, [23] DWE,
              [31] go (0 -> 1 issues one transaction)
       CTRL1  [0] MMCM reset  [1] hold the pb_clk side in reset
-             [2] run: 0 -> 1 releases the core and starts the push
+             [2] run: 0 -> 1 releases the core and starts the push;
+                 1 -> 0 stops it (the core is held in reset)
              [3] freq gate run  [4] freq counter clear
+             [5] snapshot request: toggle it, wait for STATUS3[29] to
+                 equal it, then read words 0x004..0x00B
              [31:8] freq gate window, axi_clk cycles
       CTRL2  image write: [10:0] byte address, [23:16] byte
              (each write to CTRL2 stores one byte)
       CTRL3  [12:0] image length in bytes
-             [31:16] run window, units of 1024 pb_clk cycles
+             [31:16] run window, units of 1024 pb_clk cycles;
+                     0 runs until CTRL1[2] is cleared (done never sets)
 
       STATUS0 [15:0] DRP DO  [23:16] DRDY count  [30] DRP busy
               [31] MMCM locked
       STATUS1 [23:0] pb_clk cycles counted in the gate  [31] gate open
-      STATUS2 0x0B5E0006 (design id)
-      STATUS3 [23:0] heartbeat  [30] locked  [31] run window done
+      STATUS2 0x0B5E0007 (design id; 6 had no snapshot)
+      STATUS3 [23:0] heartbeat  [29] snapshot ack  [30] locked
+              [31] run window done
 
   Memory window (AXI offset 0x10000 + 4 * word):
 
       0x000  signature        0x001  cycles at done
       0x002  {out count 1, out count 0}
       0x003  {.., flags at done[7:4], push done[1], done[0]}
+
+  Snapshot (valid once STATUS3[29] == CTRL1[5]; stable until the next
+  toggle, so a running machine can be read without tearing):
+
+      0x004  pb_clk cycles since run (free-running, 32 bits)
+      0x005  global {vm halt, idle both, fault any, from uart,
+             sd write nibble[27:24], last out word[23:8], 0[7:0]}
+      0x006  engine 0 {fault reason[31:24], fault slot[23:19],
+             fault count[15:8], swaps[7:0]}
+      0x007  engine 0 {spawns[31:20], deaths[19:8], occupancy[7:2],
+             idle[1], faulted[0]}
+      0x008  engine 0 {run-queue count[31:26], x seat[25:24],
+             x enable[23], x pc[22:14]}
+      0x009..0x00B  engine 1, same three words
       0x400 + i  engine 0 `out` i: {cycle[15:0], word[15:0]}
       0x800 + i  engine 1 `out` i
 
-  The pb_clk-side results are read only after STATUS3[31] is set, when
-  they no longer change.
+  Words 0x000..0x003 and the `out` buffers are read only after
+  STATUS3[31] is set, when they no longer change. Only single-bit
+  toggles cross between the clocks; the snapshot registers change only
+  in answer to a request, so the AXI side reads them while they hold.
   """
 
   use Hw.Component
@@ -110,6 +131,7 @@ defmodule PicoBEAM.RTL.Xc7M5Top do
   wire :status3, 32
   wire :heartbeat, 24, init: 0
   wire :pad6, 6
+  wire :pad5, 5
   wire :pad7, 7
 
   # ---- MMCM and its DRP (axi_clk domain)
@@ -182,6 +204,29 @@ defmodule PicoBEAM.RTL.Xc7M5Top do
   wire :n0, 16, init: 0
   wire :n1, 16, init: 0
   wire :flags_at_done, 4, init: 0
+
+  # ---- live status: request/ack snapshot, free-running cycle count
+  wire :forever, 1
+  wire :pbcyc, 32, init: 0
+  wire :req_a, 1
+  wire :req_s, 1
+  wire :snap_ack, 1, init: 0
+  wire :ack_s, 1
+  wire :e0a, 32
+  wire :e0b, 32
+  wire :e0c, 32
+  wire :e1a, 32
+  wire :e1b, 32
+  wire :e1c, 32
+  wire :gst, 32
+  wire :s_cyc, 32, init: 0
+  wire :s_e0a, 32, init: 0
+  wire :s_e0b, 32, init: 0
+  wire :s_e0c, 32, init: 0
+  wire :s_e1a, 32, init: 0
+  wire :s_e1b, 32, init: 0
+  wire :s_e1c, 32, init: 0
+  wire :s_g, 32, init: 0
 
   wire :ov0, 1
   wire :od0, 36
@@ -314,6 +359,18 @@ defmodule PicoBEAM.RTL.Xc7M5Top do
     data_in: :run_a,
     data_out: :run_s
 
+  instance :req_sync, Hw.CDC.Sync2,
+    clk_dst: :pb_clk,
+    rst: :mm_zero,
+    data_in: :req_a,
+    data_out: :req_s
+
+  instance :ack_sync, Hw.CDC.Sync2,
+    clk_dst: :axi_clk,
+    rst: :mm_zero,
+    data_in: :snap_ack,
+    data_out: :ack_s
+
   instance :pb, PicoBEAM.RTL.M5Core,
     UDIV: @udiv,
     clk_12: :pb_clk,
@@ -334,14 +391,24 @@ defmodule PicoBEAM.RTL.Xc7M5Top do
     obs_od1: :od1,
     obs_pc0: :pc0,
     obs_pc1: :pc1,
-    obs_flags: :flags
+    obs_flags: :flags,
+    obs_e0a: :e0a,
+    obs_e0b: :e0b,
+    obs_e0c: :e0c,
+    obs_e1a: :e1a,
+    obs_e1b: :e1b,
+    obs_e1c: :e1c,
+    obs_g: :gst
 
   comb do
     rlast_tie = 1
     one = 1
     mm_zero = 0
     pad6 = 0
+    pad5 = 0
     pad7 = 0
+    req_a = ctrl1[5..5]
+    forever = ctrl3[31..16] == 0
     zero10 = 0
     awaddr_low = awaddr[16..0]
     araddr_low = araddr[16..0]
@@ -359,8 +426,8 @@ defmodule PicoBEAM.RTL.Xc7M5Top do
 
     status0 = {mm_locked, drp_busy, pad6, drp_cnt, drp_do_q}
     status1 = {gate, pad7, mcount}
-    status2 = 0x0B5E0006
-    status3 = {done_s, locked_s, pad6, heartbeat}
+    status2 = 0x0B5E0007
+    status3 = {done_s, locked_s, ack_s, pad5, heartbeat}
 
     img_rd = img[bi[10..0]]
     ob0_rd = ob0[mem_raddr[8..0]]
@@ -428,20 +495,52 @@ defmodule PicoBEAM.RTL.Xc7M5Top do
   on :axi_clk do
     sel_q = mem_raddr[11..10]
 
-    if mem_raddr[1..0] == 0 do
+    if mem_raddr[3..0] == 0 do
       res_q = sig
     end
 
-    if mem_raddr[1..0] == 1 do
+    if mem_raddr[3..0] == 1 do
       res_q = {pad6, cyc}
     end
 
-    if mem_raddr[1..0] == 2 do
+    if mem_raddr[3..0] == 2 do
       res_q = {n1, n0}
     end
 
-    if mem_raddr[1..0] == 3 do
+    if mem_raddr[3..0] == 3 do
       res_q = {heartbeat, flags_at_done, pad6[1..0], pdone, done}
+    end
+
+    if mem_raddr[3..0] == 4 do
+      res_q = s_cyc
+    end
+
+    if mem_raddr[3..0] == 5 do
+      res_q = s_g
+    end
+
+    if mem_raddr[3..0] == 6 do
+      res_q = s_e0a
+    end
+
+    if mem_raddr[3..0] == 7 do
+      res_q = s_e0b
+    end
+
+    if mem_raddr[3..0] == 8 do
+      res_q = s_e0c
+    end
+
+    if mem_raddr[3..0] == 9 do
+      res_q = s_e1a
+    end
+
+    if mem_raddr[3..0] == 10 do
+      res_q = s_e1b
+    end
+
+    if mem_raddr[3..0] == 11 do
+      res_q = s_e1c
     end
   end
 
@@ -564,11 +663,35 @@ defmodule PicoBEAM.RTL.Xc7M5Top do
           n1 = n1 + 1
         end
 
-        if cyc + 1 == win do
+        if cyc + 1 == win and forever == 0 do
           done = 1
           flags_at_done = flags
         end
       end
+    end
+  end
+
+  # ---- pb_clk: live status. The request is a toggle; a new value is
+  # answered by one copy and the matching ack, and the copies then hold
+  # until the next toggle. Runs whether or not the core is released, so a
+  # stopped machine still answers (with its reset values).
+  on :pb_clk do
+    if go == 0 do
+      pbcyc = 0
+    else
+      pbcyc = pbcyc + 1
+    end
+
+    if req_s != snap_ack do
+      snap_ack = req_s
+      s_cyc = pbcyc
+      s_g = gst
+      s_e0a = e0a
+      s_e0b = e0b
+      s_e0c = e0c
+      s_e1a = e1a
+      s_e1b = e1b
+      s_e1c = e1c
     end
   end
 end
