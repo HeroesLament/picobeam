@@ -49,9 +49,11 @@ for s in mk_m3_spawn8 mk_fixed mk_heapprog mk_gcloop mk_gcconc mk_bitwise mk_fun
 done
 mix run scripts/emit_tops.exs >/dev/null 2>&1
 mix run scripts/emit_m5.exs >/dev/null 2>&1
+# the directory first: on a fresh tree the copy had nowhere to land and
+# the hex-loading benches failed on a missing image
+mkdir -p $D/p
 cp _emit/m3/*.hex _emit/bench/*.hex _emit/m4/*.hex _emit/sd/*.hex "$D/p/" 2>/dev/null
 
-mkdir -p $D/p
 for f in $D/*.v; do
   python3 scripts/patch_netlist.py "$f" "$D/p/$(basename "$f")" 2>/dev/null
 done
